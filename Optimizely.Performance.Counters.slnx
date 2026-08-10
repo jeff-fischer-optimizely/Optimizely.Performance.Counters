@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Optimizely.Performance.Counters.CMS/Optimizely.Performance.Counters.CMS.csproj" />
+    <Project Path="src/Optimizely.Performance.Counters.Commerce/Optimizely.Performance.Counters.Commerce.csproj" />
+    <Project Path="src/Optimizely.Performance.Counters.Core/Optimizely.Performance.Counters.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Optimizely.Performance.Counters.Tests/Optimizely.Performance.Counters.Tests.csproj" />
+  </Folder>
+</Solution>

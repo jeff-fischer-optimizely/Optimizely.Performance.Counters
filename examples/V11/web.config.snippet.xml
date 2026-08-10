@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lines to merge into a CMS 11 site's web.config. Not a drop-in file.
+
+  Nothing here is needed by Optimizely.Performance.Counters.CMS itself - the initialization module is
+  discovered automatically and reads no configuration. This is only the Application Insights wiring,
+  and see the caveat in README.md: the AI subscription is not implemented on V11 yet, so the counters
+  reach the Optimizely-Performance EventSource but not the AI EventCounterCollectionModule.
+-->
+<configuration>
+
+  <appSettings>
+    <!-- Preferred. Connection strings replaced bare instrumentation keys in AI 2.x. -->
+    <add key="APPLICATIONINSIGHTS_CONNECTION_STRING"
+         value="InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://REGION.in.applicationinsights.azure.com/" />
+  </appSettings>
+
+  <system.diagnostics>
+    <!--
+      Turn this on while you are confirming the counters work, then take it back out. The module logs
+      which telemetry systems it detected, every decorator it registered, and the detected versus
+      expected Optimizely version - which is the fastest way to tell "not collecting" apart from
+      "not instrumented".
+    -->
+    <trace autoflush="true">
+      <listeners>
+        <add name="OptimizelyPerformanceCounters"
+             type="System.Diagnostics.TextWriterTraceListener"
+             initializeData="App_Data\performance-counters.log" />
+      </listeners>
+    </trace>
+  </system.diagnostics>
+
+</configuration>

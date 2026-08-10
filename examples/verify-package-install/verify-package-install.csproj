@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Proves the published packages install and bind, on every target framework they ship, without an
+    Optimizely licence or a database. That is the part of the smoke test that can run in CI; the rest
+    of it needs a real site and is written up in docs/SMOKE_TEST.md.
+
+    Deliberately one multi-targeted project rather than one per major. The install is the same act on
+    all three, and the differences that actually exist between them - web.config against appsettings,
+    which decorators there are, whether Application Insights gets wired up - are what the V11, V12
+    and V13 folders hold.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net472;net6.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <!-- This is a consumer, so it should see exactly what a consumer sees, warnings included. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <RootNamespace>Optimizely.Performance.Counters.Examples.VerifyPackageInstall</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Referenced as packages, not as projects. A ProjectReference would prove the source compiles,
+    which the tests already prove; only a PackageReference exercises the dependency graph, the
+    lib/ layout and the assembly binding that a consumer actually gets.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Optimizely.Performance.Counters.CMS" Version="1.0.0" />
+    <PackageReference Include="Optimizely.Performance.Counters.Commerce" Version="1.0.0" />
+  </ItemGroup>
+
+</Project>

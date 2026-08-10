@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- One TFM per supported major: net472 = V11, net8.0 = V12, net10.0 = V13. The intermediate
+         TFMs (net6.0/7.0/9.0) compile the same CMS12 sources, so testing them adds runtime
+         coverage of the BCL rather than of this code. -->
+    <TargetFrameworks>net472;net8.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- The decorators are deliberately full of pass-throughs; XML docs are not useful here. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- Mirror the version symbols the projects under test use, so the tests can assert
+       version-specific shapes. -->
+  <PropertyGroup>
+    <DefineConstants Condition="'$(TargetFramework)' == 'net472'">$(DefineConstants);CMS11;COMMERCE13</DefineConstants>
+    <DefineConstants Condition="'$(TargetFramework)' == 'net8.0'">$(DefineConstants);CMS12;COMMERCE14</DefineConstants>
+    <DefineConstants Condition="'$(TargetFramework)' == 'net10.0'">$(DefineConstants);CMS13;COMMERCE15</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Optimizely.Performance.Counters.Core\Optimizely.Performance.Counters.Core.csproj" />
+    <ProjectReference Include="..\..\src\Optimizely.Performance.Counters.CMS\Optimizely.Performance.Counters.CMS.csproj" />
+    <ProjectReference Include="..\..\src\Optimizely.Performance.Counters.Commerce\Optimizely.Performance.Counters.Commerce.csproj" />
+  </ItemGroup>
+
+  <!-- The projects under test set PrivateAssets="compile" on their Optimizely references, so the
+       compile-time assemblies do not flow here. The tests reference them directly at the same
+       versions. -->
+
+  <!-- .NET Framework 4.7.2 (V11 / Commerce 13) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV11Version)" />
+    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV11Version)" />
+    <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV13Version)" />
+    <!-- DispatchProxy is not in the .NET Framework BCL; the test doubles are built on it. -->
+    <PackageReference Include="System.Reflection.DispatchProxy" Version="4.7.1" />
+    <!-- V11 has no IServiceCollection. Its container is StructureMap, and the container tests
+         build a real one so Intercept is exercised the way a V11 site exercises it. -->
+    <PackageReference Include="EPiServer.ServiceLocation.StructureMap" Version="2.0.3" />
+  </ItemGroup>
+
+  <!-- .NET 8 (V12 / Commerce 14) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV12Version)" />
+    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" />
+    <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV14Version)" />
+  </ItemGroup>
+
+  <!-- .NET 10 (V13 / Commerce 15) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV13Version)" />
+    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV13Version)" />
+    <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV15Version)" />
+  </ItemGroup>
+
+</Project>

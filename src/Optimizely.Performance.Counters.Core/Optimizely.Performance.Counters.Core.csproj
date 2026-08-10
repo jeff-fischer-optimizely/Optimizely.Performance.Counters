@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net472;net6.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>Optimizely.Performance.Counters.Core</PackageId>
+    <Description>Core infrastructure for Optimizely performance counters - shared by CMS and Commerce packages</Description>
+  </PropertyGroup>
+
+  <!--
+    The Microsoft.Extensions.* line tracks the runtime, so its version has to move with the target
+    framework rather than being pinned once for all six. It was pinned at 6.0.0 globally, which is a
+    downgrade on net10.0: Optimizely.Performance.DotNetCounters asks for 10.0.0 there, and NuGet
+    treats the downgrade as an error, so the net10.0 build could not restore at all.
+
+    Matching each target framework to its own band also keeps a net9.0 or net10.0 host from loading
+    a 6.0.0 assembly over the one already in its shared framework.
+  -->
+  <PropertyGroup>
+    <ExtensionsVersion Condition="'$(TargetFramework)' == 'net472'">6.0.0</ExtensionsVersion>
+    <ExtensionsVersion Condition="'$(TargetFramework)' == 'net6.0'">6.0.0</ExtensionsVersion>
+    <ExtensionsVersion Condition="'$(TargetFramework)' == 'net7.0'">7.0.0</ExtensionsVersion>
+    <ExtensionsVersion Condition="'$(TargetFramework)' == 'net8.0'">8.0.0</ExtensionsVersion>
+    <ExtensionsVersion Condition="'$(TargetFramework)' == 'net9.0'">9.0.0</ExtensionsVersion>
+    <ExtensionsVersion Condition="'$(TargetFramework)' == 'net10.0'">10.0.0</ExtensionsVersion>
+  </PropertyGroup>
+
+  <!-- Common dependencies (all frameworks) -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(ExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(ExtensionsVersion)" />
+    <PackageReference Include="Optimizely.Performance.DotNetCounters" Version="1.0.0" />
+  </ItemGroup>
+
+  <!-- .NET Framework - EventSource/EventCounter support -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

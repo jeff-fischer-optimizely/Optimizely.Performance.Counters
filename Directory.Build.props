@@ -1,0 +1,70 @@
+<Project>
+
+  <!--
+    Package metadata shared by all three packages. Kept here rather than repeated in each csproj so
+    the three cannot drift apart on a feed, and matched to Optimizely.Performance.DotNetCounters,
+    which they always ship alongside.
+  -->
+  <PropertyGroup>
+    <Authors>Optimizely</Authors>
+    <Company>Optimizely</Company>
+    <Version>1.0.0</Version>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/optimizely</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/optimizely/performance-counters</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>optimizely episerver performance counters monitoring application-insights telemetry</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+  <!--
+    The Optimizely versions each target framework is built and tested against, and the minimums the
+    published packages declare.
+
+    Pinned rather than floating (11.*, 12.*, ...). A floating reference makes the minimum version in
+    the shipped .nuspec whatever happened to be latest on the machine that built it, so the same
+    commit produces different packages on different days - and it already had the CMS and Commerce
+    packages declaring different minimum EPiServer.Framework versions from one build.
+
+    These are also the versions the test project compiles against, so what the tests prove is what
+    the packages promise. Raising one is a deliberate change to the support matrix; see
+    OptimizelyVersionDetector for the target-framework side of the same map.
+
+    The CMS versions are not free choices. Optimizely.Performance.DotNetCounters 1.0.0 - the hard
+    dependency these packages always ship beside - declares EPiServer.CMS.Core and EPiServer.Framework
+    minimums of 11.21.5 / 12.24.1 / 13.1.1, and it reaches every consumer through Core. Declaring
+    anything lower here is an NU1605 downgrade error, so these three match it exactly.
+
+    That inherited floor has a cost worth knowing about. EPiServer.CMS.AspNet(Core) pins its sibling
+    EPiServer.CMS.Core to its own exact version, while Commerce asks for both as a range and so gets
+    AspNetCore at the range floor. Because the inherited minimum sits above that floor, CMS.Core is
+    lifted past the pin and a consumer installing these packages sees NU1608 on every target
+    framework. The warning is harmless on a site already running a current CMS, since the site's own
+    reference lifts AspNetCore to match, but the fix belongs in DotNetCounters: lower its minimums to
+    the oldest CMS it actually supports, then lower these with it.
+  -->
+  <PropertyGroup>
+    <!-- V11: CMS 11 / Commerce 13, net472 -->
+    <OptimizelyV11Version>11.21.5</OptimizelyV11Version>
+    <CommerceV13Version>13.37.2</CommerceV13Version>
+
+    <!-- V12: CMS 12 / Commerce 14, net6.0-net9.0.
+         Commerce 14.46 dropped net6.0 and net7.0, so those two targets stay on 14.45.5, the last
+         release that still ships a net6.0 assembly. Not the far older 14.0.3: the CMS floor that one
+         names, EPiServer.Framework 12.0.3, has a graph that cannot restore at all - it asks for
+         System.Security.Permissions [5.0.0, 6.0.0) while its own Microsoft.Data.SqlClient 3.0.0
+         chain requires >= 6.0.0, an NU1107 hard error rather than a warning. -->
+    <OptimizelyV12Version>12.24.1</OptimizelyV12Version>
+    <CommerceV14LegacyVersion>14.45.5</CommerceV14LegacyVersion>
+    <CommerceV14Version>14.46.0</CommerceV14Version>
+
+    <!-- V13: CMS 13 / Commerce 15, net10.0 -->
+    <OptimizelyV13Version>13.1.1</OptimizelyV13Version>
+    <CommerceV15Version>15.1.0</CommerceV15Version>
+  </PropertyGroup>
+
+</Project>

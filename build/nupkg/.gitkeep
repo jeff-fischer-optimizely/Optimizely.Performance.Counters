@@ -1,0 +1,6 @@
+Local package feed for examples/NuGet.config. Populated by:
+
+    dotnet pack -c Release -o build/nupkg
+
+The .nupkg files themselves are never committed; only this folder is, so that NuGet has a source
+path that exists. See the note in ../../.gitignore.

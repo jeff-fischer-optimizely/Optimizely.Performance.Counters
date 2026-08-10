@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net472;net6.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>Optimizely.Performance.Counters.CMS</PackageId>
+    <Description>Performance counters for Optimizely CMS V11, V12, and V13 - Content, Cache, and Events</Description>
+  </PropertyGroup>
+
+  <!-- Define compilation symbols for version-specific code -->
+  <PropertyGroup>
+    <DefineConstants Condition="'$(TargetFramework)' == 'net472'">$(DefineConstants);CMS11</DefineConstants>
+    <DefineConstants Condition="'$(TargetFramework)' == 'net6.0' Or '$(TargetFramework)' == 'net7.0' Or '$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">$(DefineConstants);CMS12</DefineConstants>
+    <DefineConstants Condition="'$(TargetFramework)' == 'net10.0'">$(DefineConstants);CMS13</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Project references -->
+  <ItemGroup>
+    <ProjectReference Include="..\Optimizely.Performance.Counters.Core\Optimizely.Performance.Counters.Core.csproj" />
+    <!-- Core includes Optimizely.Performance.DotNetCounters as transitive dependency -->
+  </ItemGroup>
+
+  <!--
+    Initialization support shared with the Commerce package. Linked source rather than a type in
+    Core, because every member of it touches an EPiServer type and Core deliberately references
+    none. The shared type is internal, so compiling it into both packages cannot produce an
+    ambiguous reference for a site that installs both.
+  -->
+  <ItemGroup>
+    <Compile Include="..\Shared\*.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+  <!-- Common dependencies -->
+  <ItemGroup>
+    <!-- Logging version flows from Optimizely packages -->
+  </ItemGroup>
+
+  <!--
+    EPiServer.Find is deliberately absent. It was referenced here but nothing used it - the only
+    mention was a TODO for a search decorator - and every reference lands in the published .nuspec,
+    so it forced Find onto every consumer of this package. Find is licensed separately. Add it back
+    with the decorator that needs it, not before.
+  -->
+
+  <!-- .NET Framework 4.7.2 (V11 ONLY) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV11Version)" PrivateAssets="compile" />
+    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV11Version)" PrivateAssets="compile" />
+    <Reference Include="System.Configuration" />
+    <Reference Include="System.Web" />
+  </ItemGroup>
+
+  <!-- .NET 6-9 (V12 ONLY) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net6.0' Or '$(TargetFramework)' == 'net7.0' Or '$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
+    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV12Version)" PrivateAssets="compile" />
+    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" PrivateAssets="compile" />
+  </ItemGroup>
+
+  <!-- .NET 10+ (V13 ONLY) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV13Version)" PrivateAssets="compile" />
+    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV13Version)" PrivateAssets="compile" />
+  </ItemGroup>
+
+</Project>
