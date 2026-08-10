@@ -1,376 +1,408 @@
-# Optimizely Performance Counters
+# Optimizely CMS and Commerce Performance Counters
 
-Custom performance counters for Optimizely CMS and Commerce, providing deep introspection into internal operations across V11, V12, and V13.
+Application Insights can tell you that a page took four seconds. It cannot tell you that the page
+made 380 content loads, that 340 of them missed the cache, or that the cart save underneath the
+checkout took 1.8 of those seconds. Optimizely does not publish that. There is no EventSource, no
+`ActivitySource`, no `DiagnosticListener` and no Windows performance counter category anywhere in
+`EPiServer.dll`, `EPiServer.Framework.dll` or the Commerce assemblies, on any of V11, V12 or V13 —
+so there is nothing for a collector to subscribe to, and no amount of configuring your APM will
+make these numbers appear.
 
-## ⚠️ CRITICAL: Version Compatibility
+This package makes them appear. It wraps the Optimizely services that do the work in instrumented
+decorators, publishes the timings and rates as .NET EventCounters on an EventSource named
+`Optimizely-Performance`, and — where the host supports it — subscribes Application Insights to
+them automatically. The metrics land in `customMetrics` next to your existing telemetry, queryable
+in Kusto and chartable against request duration. Install, restart, no code changes.
 
-This package uses **strict framework-to-version mapping** to ensure compile-time type safety and correct counter implementations.
+It is the CMS-and-Commerce half of a pair.
+[Optimizely.Performance.DotNetCounters](https://github.com/jeff-fischer-optimizely/Optimizely.Performance.DotNetCounters)
+covers the runtime beneath your site — GC, thread pool, lock contention, request queue — and is a
+hard dependency here, so the two always ship together. Between them you get the process and the
+application: *the CLR is fine, your cache hit rate collapsed* is a conclusion neither one reaches
+alone.
 
-### Supported Configurations
+## Why you'd want this
 
-| Your Optimizely Version | Required .NET Version | Package Build Used | Counter Backend |
-|------------------------|----------------------|-------------------|-----------------|
-| **V11** (CMS 11.x) | .NET Framework 4.7.2 | `net472` | Find/SQL |
-| **V12** (CMS 12.x) | **.NET 6 ONLY** | `net6.0` | Find/SQL |
-| **V13** (CMS 13.x) | .NET 8, 9, or 10 | `net8.0`+ | Graph/SQL |
+- **Attribute the latency.** Request duration says the site is slow. `Optimizely.CMS.Content.LoadTimeMs`,
+  `Optimizely.CMS.Cache.HitRate` and `Optimizely.Commerce.Orders.SaveTimeMs` say which layer is
+  slow, and whether the cause is volume or per-call cost.
+- **See the N+1 before it reaches production.** `LoadOperations` against `LoadTimeMs` separates
+  "one slow load" from "four hundred fast ones", which is the single most common Optimizely
+  performance defect and the one request telemetry hides best.
+- **Watch the cache, which is where Optimizely performance actually lives.** Hit rate, miss rate
+  and invalidation rate are not exposed by anything else. A publish storm that flushes the cache
+  across a load-balanced cluster shows up here as an invalidation spike and a hit-rate cliff,
+  minutes before it shows up as a support ticket.
+- **Prove an upgrade or a code change.** The same counter names are emitted on V11, V12 and V13, so
+  a before-and-after comparison across a CMS migration is a Kusto query rather than an argument.
+- **Nothing to write.** Auto-registers through `IConfigurableModule`. No `Startup.cs` change, no
+  attribute, no wrapper of your own.
+- **Telemetry-agnostic.** EventCounters are an open .NET mechanism. Application Insights is
+  auto-wired, DataDog auto-discovers the source, `dotnet-counters` attaches with no configuration
+  at all, and none of them are a dependency of this library.
 
-### ❌ Unsupported Configurations
+## When you'd want it
 
-**V12 on .NET 8+**: While Optimizely V12 *can* technically run on .NET 8, **this package does NOT support it**. The `net8.0` build is compiled against V13 APIs (including Graph). If you're running V12, you must use .NET 6.
+| Situation | What it gives you |
+| --- | --- |
+| A site is intermittently slow and the APM only shows "SQL was slow" | Whether the SQL is one query or a content-load loop, and whether the cache was serving |
+| Load-testing before a launch | A per-operation baseline you can regress against, not just a p95 on the whole page |
+| Tuning cache settings or a custom `ContentProvider` | Hit and miss rates that move while you change things |
+| A Commerce checkout that degrades under load | Cart save and load timings separated from the rest of the request |
+| Planning or validating a V11 → V12 → V13 upgrade | The same metric names on both sides of the move |
+| A multi-server cluster with remote-event problems (V13) | Remote event rate, failure rate and delivery time |
 
-**V13 on .NET 6**: V13 requires .NET 8 minimum when using this package to ensure compile-time safety and access to V13-specific features.
-
-### Why These Restrictions?
-
-- **V13 uses Optimizely Graph** - fundamentally different architecture from V12's Find/SQL backend
-- **Compile-time type safety** - ensures you use the correct counter implementations for your version
-- **Prevents runtime errors** - API mismatches are caught at compile time, not in production
-
-### Migration Guidance
-
-**Upgrading from V12 to V13?**
-1. Upgrade your project to .NET 8 or later
-2. Upgrade Optimizely CMS to V13
-3. Reinstall this package - it will automatically use the V13 build
-
-**Running V12 on .NET 8?**
-- **Recommended**: Stay on .NET 6 until you're ready to upgrade to V13
-- **Alternative**: Don't use this performance counter package until after upgrading to V13
-- **Not Recommended**: Fork and maintain your own build
+And when you wouldn't: if you only need to know whether the *process* is healthy — GC, memory,
+threads — the DotNetCounters package alone covers that and this one adds nothing. If you have a
+commercial APM with full .NET call-tree profiling already deployed and paid for, it will show you
+much of this and a great deal more; the case for these packages is that they are in-process,
+already in your Application Insights bill, and specific to Optimizely's own seams.
 
 ---
 
-## 📦 Installation
+## Installation
+
+Install the package for what your site runs. Both may be installed side by side on a Commerce site.
 
 ```bash
-dotnet add package Optimizely.Performance.Counters
+dotnet add package Optimizely.Performance.Counters.CMS
+dotnet add package Optimizely.Performance.Counters.Commerce
 ```
 
-### Requirements
+`Optimizely.Performance.Counters.Core` and `Optimizely.Performance.DotNetCounters` come in
+transitively; there is no reason to reference either directly.
 
-- **Optimizely CMS** V11, V12, or V13
-- **Optimizely.Performance.DotNetCounters** (automatically installed as dependency)
-- **Application Insights** configured in your project
+### Supported configurations
+
+The target framework selects the Optimizely major, and the mapping is exact — the package is
+compiled against that major's API surface, and the initialization module verifies the site it
+loaded into matches.
+
+| Optimizely | CMS | Commerce | Target framework |
+| --- | --- | --- | --- |
+| **V11** | 11.21.5+ | 13.x | `net472` |
+| **V12** | 12.24.1+ | 14.x | `net6.0`, `net7.0`, `net8.0`, `net9.0` |
+| **V13** | 13.1.1+ | 15.x | `net10.0` |
+
+V12 on .NET 8 and .NET 9 is supported — those are ordinary V12 builds, not V13 builds. The only
+combination that cannot work is a CMS major on a target framework mapped to a different one, and
+that fails loudly at startup rather than misbehaving quietly.
+
+> **NU1608 on restore is expected and harmless.** `Optimizely.Performance.DotNetCounters` 1.0.0
+> declares CMS minimums that sit above the floor Commerce names, so NuGet lifts `EPiServer.CMS.Core`
+> past the exact version its sibling `EPiServer.CMS.AspNet(Core)` pins to. A site already running a
+> current CMS lifts `AspNet(Core)` to match through its own reference. See the note in
+> [Directory.Build.props](Directory.Build.props).
+
+### Making the counters visible
+
+The package publishes whether or not anything is listening. To see the numbers you need one of:
+
+- **Application Insights** on V12 or V13 — subscribed automatically at startup, nothing to
+  configure beyond the connection string you already have.
+- **DataDog** — discovers the `Optimizely-Performance` source on its own.
+- **`dotnet-counters`** on V12 or V13 — `dotnet-counters monitor --process-id <pid> Optimizely-Performance`.
+- **PerfView or your own `EventListener`** on V11, where `dotnet-counters` cannot attach.
+
+See [examples/](examples/) for the settings to merge into a V11, V12 or V13 site, and
+[docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) for how to confirm each stage on a real one.
 
 ---
 
-## 🎯 Features
+## What is instrumented
 
-### CMS Counters
+Thirty counters, from five decorated services. This is the whole list — the package instruments a
+finite, hand-maintained set of seams rather than crawling for things to wrap.
 
-**Content Operations:**
-- `Optimizely.CMS.Content.LoadsPerSecond` - Content load rate
-- `Optimizely.CMS.Content.AverageLoadTimeMs` - Average load latency
-- `Optimizely.CMS.Content.SavesPerSecond` - Content save rate
-- `Optimizely.CMS.Content.AverageSaveTimeMs` - Average save latency
-- `Optimizely.CMS.Content.PublishesPerSecond` - Publishing rate
-- `Optimizely.CMS.Content.AveragePublishTimeMs` - Average publish duration
+| Prefix | Counters |
+| --- | --- |
+| `Optimizely.CMS.Content.` | `LoadTimeMs`, `LoadOperations`, `SaveTimeMs`, `SaveOperations`, `PublishTimeMs`, `PublishOperations`, `DeleteTimeMs`, `DeleteOperations`, `MoveTimeMs`, `MoveOperations`, `ItemsLoaded` |
+| `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations` |
+| `Optimizely.CMS.Events.` | `EventsPerSecond`, `RemoteEventsPerSecond`, `RemoteEventFailuresPerSecond`, `AverageRemoteEventDeliveryTimeMs` *(V13 only)* |
+| `Optimizely.Commerce.Orders.` | `SaveTimeMs`, `SaveOperations`, `LoadTimeMs`, `LoadOperations`, `CreateTimeMs`, `CreateOperations`, `DeleteTimeMs`, `DeleteOperations`, `CartLineItemCount`, `CartTotal`, `CartsLoaded` |
 
-**Cache System:**
-- `Optimizely.CMS.Cache.ObjectCacheHitRate` - Cache hit percentage
-- `Optimizely.CMS.Cache.CachedObjectCount` - Current cached objects
-- `Optimizely.CMS.Cache.InvalidationsPerSecond` - Cache invalidation rate
-- `Optimizely.CMS.Cache.RemoteSyncOperationsPerSecond` - Multi-server sync rate
+Every timed operation emits a `TimeMs` and an `Operations` counter as a pair, so a duration can
+always be read against the call count that produced it.
 
-**Search (V11/V12 - Find):**
-- `Optimizely.CMS.Search.QueriesPerSecond` - Search query rate
-- `Optimizely.CMS.Search.AverageQueryTimeMs` - Average query latency
-- `Optimizely.CMS.Search.IndexingOperationsPerSecond` - Indexing rate
+The decorated services:
 
-**Search (V13 - Graph):**
-- `Optimizely.CMS.Graph.QueriesPerSecond` - GraphQL query rate
-- `Optimizely.CMS.Graph.AverageQueryTimeMs` - Average GraphQL latency
-- `Optimizely.CMS.Graph.SyncOperationsPerSecond` - Content sync to Graph
+| Service | Package | Versions |
+| --- | --- | --- |
+| `IContentLoader` | CMS | V11, V12, V13 |
+| `IContentRepository` | CMS | V11, V12, V13 |
+| `ISynchronizedObjectInstanceCache` | CMS | V11, V12, V13 |
+| `IEventPublisher` | CMS | V13 only — V11 and V12 raise events through the static `Event` class, which has no seam to decorate |
+| `IOrderRepository` | Commerce | V11, V12, V13 |
 
-**Events:**
-- `Optimizely.CMS.Events.ContentEventsPerSecond` - Content event rate
-- `Optimizely.CMS.Events.RemoteEventsPerSecond` - Remote event rate
-- `Optimizely.CMS.Events.RemoteEventFailuresPerSecond` - Failed remote events
-
-### Commerce Counters
-
-**Orders:**
-- `Optimizely.Commerce.Orders.CartOperationsPerSecond` - Cart operation rate
-- `Optimizely.Commerce.Orders.AverageCartCalculationTimeMs` - Cart calc latency
-- `Optimizely.Commerce.Orders.OrderCreatesPerSecond` - Order creation rate
-- `Optimizely.Commerce.Orders.CheckoutsPerSecond` - Checkout rate
-- `Optimizely.Commerce.Orders.AverageCheckoutTimeMs` - Average checkout duration
-
-**Pricing:**
-- `Optimizely.Commerce.Pricing.RequestsPerSecond` - Price lookup rate
-- `Optimizely.Commerce.Pricing.AverageLookupTimeMs` - Price lookup latency
-
-**Inventory:**
-- `Optimizely.Commerce.Inventory.RequestsPerSecond` - Inventory lookup rate
-- `Optimizely.Commerce.Inventory.ReservationsPerSecond` - Stock reservation rate
-- `Optimizely.Commerce.Inventory.AdjustmentsPerSecond` - Inventory adjustment rate
-
-**Promotions:**
-- `Optimizely.Commerce.Promotions.EvaluationsPerSecond` - Promotion evaluation rate
-- `Optimizely.Commerce.Promotions.AverageExecutionTimeMs` - Promotion engine latency
-- `Optimizely.Commerce.Promotions.ActivePromotionsCount` - Active promotions (gauge)
-
-**Payments:**
-- `Optimizely.Commerce.Payments.OperationsPerSecond` - Payment operation rate
-- `Optimizely.Commerce.Payments.AverageProcessingTimeMs` - Payment processing latency
-- `Optimizely.Commerce.Payments.SuccessRate` - Successful payments percentage
-
-### Infrastructure Counters
-
-**Database:**
-- `Optimizely.Infrastructure.Database.QueriesPerSecond` - Database query rate
-- `Optimizely.Infrastructure.Database.AverageQueryTimeMs` - Average query latency
-- `Optimizely.Infrastructure.Database.ActiveConnections` - Active DB connections
-- `Optimizely.Infrastructure.Database.ConnectionTimeouts` - Connection timeouts/sec
-
-**Blob Storage:**
-- `Optimizely.Infrastructure.Blobs.ReadsPerSecond` - Blob read rate
-- `Optimizely.Infrastructure.Blobs.WritesPerSecond` - Blob write rate
-- `Optimizely.Infrastructure.Blobs.AverageReadTimeMs` - Blob read latency
-
-**Dynamic Data Store (DDS):**
-- `Optimizely.Infrastructure.DDS.QueriesPerSecond` - DDS query rate
-- `Optimizely.Infrastructure.DDS.SavesPerSecond` - DDS save rate
-- `Optimizely.Infrastructure.DDS.AverageQueryTimeMs` - DDS query latency
-
-**Service Bus:**
-- `Optimizely.Infrastructure.ServiceBus.MessagesSentPerSecond` - Message send rate
-- `Optimizely.Infrastructure.ServiceBus.MessagesReceivedPerSecond` - Message receive rate
-- `Optimizely.Infrastructure.ServiceBus.FailedDeliveriesPerSecond` - Failed deliveries
-
-**Scheduled Jobs:**
-- `Optimizely.Infrastructure.ScheduledJobs.ExecutionsPerHour` - Job execution rate
-- `Optimizely.Infrastructure.ScheduledJobs.SuccessRate` - Job success percentage
-- `Optimizely.Infrastructure.ScheduledJobs.AverageDurationMs` - Average job duration
+Counter names carry no dimensions. An overload that could be distinguished — a load by GUID versus
+by `ContentReference` — reports under the same base name, because Application Insights matches
+EventCounter names exactly and a name with a dimension baked into it is a name nobody subscribed to.
 
 ---
 
-## 🚀 Usage
-
-### Automatic Initialization
-
-The package initializes automatically on application startup via Optimizely's `IConfigurableModule` system. No code changes required.
-
-### Runtime Validation
-
-On startup, the module:
-1. Validates `Optimizely.Performance.DotNetCounters` is installed
-2. Detects your Optimizely CMS version
-3. Validates the detected version matches the compiled version
-4. Registers appropriate counters
-5. **Throws an exception** if configuration is invalid
-
-**Example startup log:**
+## How it works
 
 ```
-[INFO] Version Detection:
-Detected Version: V12
-Expected Version: V12
-CMS.Core: 12.20.0
-Framework: 12.20.0
-Commerce.Core: 14.15.3
-Has ASP.NET Core: True
-Target Framework: .NET 6
-
-[INFO] Version validation successful: Detected V12, Expected V12
-[INFO] Registering performance counters for Optimizely V12
-[INFO] Initialized counter: Optimizely.CMS.Content.LoadsPerSecond
-[INFO] Initialized counter: Optimizely.CMS.Content.AverageLoadTimeMs
-...
+  InstrumentedContentLoader
+  InstrumentedContentRepository
+  InstrumentedSynchronizedObjectInstanceCache   ──→  IMetricTracker
+  InstrumentedEventPublisher        (V13)                  |
+  InstrumentedOrderRepository                              v
+                                              EventCounterMetricTracker
+                                                           |
+                                                           v
+                             OptimizelyPerformanceEventSource ("Optimizely-Performance")
+                                                           |
+                    +--------------------------------------+--------------------+
+                    v                                      v                    v
+     AI EventCounterCollectionModule                    DataDog          dotnet-counters
 ```
 
-**Example error (misconfiguration):**
+An `[InitializableModule] : IConfigurableModule` in each package runs during container
+construction, before any module initializes. It logs the detected and expected Optimizely version
+and throws if they disagree, detects the telemetry systems present, registers
+`EventCounterMetricTracker` as `IMetricTracker`, and wraps the services above using
+`context.Services.Intercept<T>()`. The Commerce module does the same and is idempotent about the
+shared parts, so installing both packages registers telemetry once.
+
+Nothing in the library listens to its own EventSource, and it does not republish the counters that
+`Optimizely.Performance.DotNetCounters` collects. Collection is entirely the host's business.
+
+**Overhead.** Per-operation counters are written inline — an interlocked add and a `Stopwatch`
+timestamp, no allocation, no closure. The cache and event decorators sit on paths that fire
+thousands of times a second, so those accumulate into interlocked fields and flush on a 60-second
+timer instead. What your collector *reads* is on its own schedule: `EventCounterCollectionModule`
+polls at 60 seconds by default, `dotnet-counters` at one.
+
+### Startup log
+
+Set `Optimizely.Performance.Counters.CMS.Initialization` and
+`...Commerce.Initialization` to `Information`:
 
 ```
-[ERROR] CRITICAL: Package compiled for Optimizely V12 but detected V13.
-This is an unsupported configuration.
-
-Supported configurations:
-  - V11 requires .NET Framework 4.7.2
-  - V12 requires .NET 6
-  - V13 requires .NET 8+
-
-If you are running V12 on .NET 8, this package does NOT support that configuration.
-Please upgrade to V13 or downgrade to .NET 6.
-
-See README.md for version compatibility details.
+[INFO] CMS Version Detection:
+       Detected Version: V12
+       Expected Version: V12
+       CMS.Core: 12.24.1
+       ...
+[INFO] Telemetry Detection: Telemetry Systems: Application Insights 2.22.0.997, EventCounters
+[INFO] Registered 30 Optimizely EventCounters with Application Insights
+[INFO] Registered IMetricTracker: EventCounterMetricTracker
+[INFO] Registering CMS performance counter decorators
+[INFO] Registered decorators: IContentLoader, IContentRepository, ISynchronizedObjectInstanceCache.
+       IEventPublisher is V13-only and was not registered.
+[INFO] Optimizely CMS Performance Counters configured successfully
 ```
 
-### Viewing Metrics in Application Insights
+A version mismatch throws out of `ConfigureContainer` and takes the site down at startup. That is
+deliberate: a counters package that silently instruments the wrong API surface is worse than one
+that refuses to start.
 
-1. Navigate to your Application Insights resource in Azure Portal
-2. Go to **Metrics**
-3. Select metric namespace **"Custom"**
-4. Select specific counters by name (e.g., `Optimizely.CMS.Content.LoadsPerSecond`)
-5. Add filters and aggregations as needed
+---
 
-### Kusto Queries
+## Alternatives
 
-**View all Optimizely counters:**
+Worth knowing what else exists before adopting anything, and the honest answer differs sharply by
+version. Everything below was verified against the shipped assemblies rather than the
+documentation.
+
+### The common ground: Optimizely publishes no telemetry of its own
+
+On **every** supported version — CMS 11.21.5, 12.24.1 and 13.1.1, and Commerce 13, 14 and 15 —
+`EPiServer.dll`, `EPiServer.Framework.dll` and the Commerce assemblies contain no reference to
+`EventSource`, `ActivitySource`, `DiagnosticSource`, `DiagnosticListener`,
+`System.Diagnostics.Metrics`, `PerformanceCounterCategory` or `CounterCreationData`. There is no
+hook. Any approach that works by subscribing to something the product emits has nothing to
+subscribe to, which rules out the whole OpenTelemetry auto-instrumentation family for
+Optimizely-specific metrics — those libraries cover ASP.NET Core, `HttpClient` and `SqlClient`, and
+none of them knows what an `IContentLoader` is.
+
+That leaves four real families of alternative.
+
+#### 1. `ContentProvider`'s built-in statistics — the closest thing that already exists
+
+`EPiServer.Core.ContentProvider` has exposed a public statistics surface since long before V11, and
+it is still there in V13:
+
+| Member | |
+| --- | --- |
+| `PageFetchCount`, `PageFetchCacheHits`, `PageFetchDatabaseReads` | Content fetches, and how they were served |
+| `ListingFetchCount`, `ListingFetchCacheHits`, `ListingFetchDatabaseReads` | The same for child listings |
+| `StatisticsCollectedSince` | When the current window started |
+| `ResetCounters()` | Starts a new window |
+
+Genuinely useful, and genuinely the built-in answer to "is my cache working". The trade-offs: they
+are cumulative in-process totals with no publishing mechanism, so you write the polling loop, the
+delta arithmetic and the telemetry call yourself; they are per-`ContentProvider` instance, so a
+site with several providers needs enumerating and summing; the window is global, so anything else
+that calls `ResetCounters()` moves your baseline underneath you; the numbers are process-local, so
+each node of a cluster is separate; and the scope is content *fetching* only — no save, publish,
+move or delete timings, no durations at all, and nothing whatsoever from Commerce. If cache
+effectiveness is the only question you have, this is a reasonable afternoon's work and costs you no
+dependency.
+
+#### 2. Application Insights dependency and request telemetry
+
+Already in your site, and it does real work: the SQL round trips underneath a content load appear
+as dependency telemetry with durations, and the Profiler can sample call stacks on a slow request.
+
+What it cannot do is attribute. A dependency call tells you a query ran; it does not tell you that
+`IContentLoader.Get<T>` was the caller, that it ran 380 times on one page, or — most importantly —
+anything at all about the loads that were served *from cache* and therefore issued no query. The
+cache is invisible to dependency tracking by construction, and the cache is where Optimizely
+performance is won or lost. Request telemetry has the same shape of gap one level up: it times the
+page, not the layers inside it.
+
+#### 3. Write the decorators yourself
+
+Entirely viable — `Intercept<T>()` is a supported, documented Optimizely extension point and this
+package is not doing anything you could not do. Budget realistically, though. `IContentLoader`
+alone has twenty-three members to forward; a decorator that forwards twenty-two of them and quietly
+drops one is a silent behaviour change in the CMS. The counter names have to match on the emit side
+and the subscribe side exactly, or Application Insights collects nothing and never says so. And on
+a path that runs hundreds of times per request, the tidy `Measure<T>(name, () => inner.Get(...))`
+helper you will be tempted to write allocates a closure per call — which is why this library
+deliberately does not have one.
+
+#### 4. Commercial APM
+
+New Relic, Dynatrace and AppDynamics will profile the .NET call tree and surface `IContentLoader`
+timings without anyone instrumenting anything, along with a great deal this package does not
+attempt. The cost is a second agent, a second pipeline and a second bill, and on a DXP site the
+question of whether you are allowed to install one at all.
+
+### On older Optimizely specifically
+
+**V11 (CMS 11, Commerce 13, .NET Framework 4.7.2)** is where the alternatives are thinnest and the
+gap is widest:
+
+- **The modern diagnostics stack does not reach it.** EventCounters and EventPipe are .NET Core
+  constructs. `dotnet-counters` cannot attach to a V11 site at all, and OpenTelemetry's runtime
+  instrumentation is built around the .NET Core runtime. PerfView and a hand-written `EventListener`
+  are the tools, and both are attach-and-watch rather than continuous collection.
+- **PerfMon shows you nothing Optimizely-specific.** V11 registers no performance counter category
+  — verified: `EPiServer.dll` 11.21.5 contains no `PerformanceCounterCategory` and no
+  `CounterCreationData`. What PerfMon gives you is the CLR, ASP.NET and IIS counters, which is
+  exactly the ground the DotNetCounters package covers. Content, cache and Commerce remain dark.
+- **`EPiServer.Diagnostics.Internal.IPerformanceCounter` is not a way in.** It exists in V11 and
+  V12, and it is in an `Internal` namespace: no support commitment, no published surface, and it
+  appears in the graph only as a constructor parameter of an internal dependency helper. Building
+  on it means building on something Optimizely may remove in a patch release.
+- **`EPiServer.Framework.Initialization.TimeMeters` measures startup only.** Present in 11, 12 and
+  13, useful for finding an initialization module that takes eight seconds, and silent about
+  everything after the site is up.
+- **The `ContentProvider` statistics above are the one real built-in**, with all the caveats listed.
+
+So on V11 the practical menu is: poll `ContentProvider` yourself, buy an APM, or instrument the
+seams. This package is the third, and the V11 build is the same code and the same counter names as
+the V12 and V13 builds, which is the point if you are running mixed versions through a migration.
+
+One honest caveat for V11: **Application Insights registration is not implemented there yet.**
+`TelemetryStartup.Configure` needs an `IServiceCollection` and V11 configures services through
+`IServiceConfigurationProvider`. Detection runs and is logged; the counters are published to the
+EventSource and are readable with PerfView or your own `EventListener`, but nothing is subscribed to
+Application Insights automatically. See the gaps below.
+
+**V12 and V13** have a slightly better menu — `dotnet-counters` works, Application Insights
+subscription is automatic, and OpenTelemetry is a credible pipeline for everything *except* the
+Optimizely-specific metrics, which it still has no source for. The `ContentProvider` and
+commercial-APM options are unchanged. The argument for this package on V12 and V13 is less "nothing
+else exists" and more "this is the vetted, maintained version of the thing you would otherwise
+build, and it reports the same names your V11 sites do".
+
+---
+
+## Kusto
 
 ```kusto
+// Everything this package publishes
 customMetrics
 | where name startswith "Optimizely."
-| project timestamp, name, value
-| order by timestamp desc
+| summarize avg(value), count() by name, bin(timestamp, 1m)
+| order by name asc
 ```
 
-**Track content load performance over time:**
-
 ```kusto
+// Content load cost, split into volume and per-call latency
 customMetrics
-| where name == "Optimizely.CMS.Content.LoadsPerSecond"
-| summarize avg(value), max(value), min(value) by bin(timestamp, 5m)
+| where name in ("Optimizely.CMS.Content.LoadOperations", "Optimizely.CMS.Content.LoadTimeMs")
+| summarize avg(value) by name, bin(timestamp, 5m)
+| evaluate pivot(name, avg(avg_value))
 | render timechart
 ```
 
-**Monitor order processing latency:**
+```kusto
+// Cache effectiveness against invalidation - a publish storm shows as both moving at once
+customMetrics
+| where name in ("Optimizely.CMS.Cache.HitRate", "Optimizely.CMS.Cache.InvalidationsPerSecond")
+| summarize avg(value) by name, bin(timestamp, 1m)
+| render timechart
+```
 
 ```kusto
+// Commerce cart save latency percentiles
 customMetrics
-| where name == "Optimizely.Commerce.Orders.AverageCheckoutTimeMs"
+| where name == "Optimizely.Commerce.Orders.SaveTimeMs"
 | summarize percentiles(value, 50, 95, 99) by bin(timestamp, 15m)
 | render timechart
 ```
 
-**Detect database performance issues:**
+---
 
-```kusto
-customMetrics
-| where name in (
-    "Optimizely.Infrastructure.Database.AverageQueryTimeMs",
-    "Optimizely.Infrastructure.Database.ConnectionTimeouts"
-)
-| summarize avg(value) by name, bin(timestamp, 5m)
-| render timechart
-```
+## Troubleshooting
 
-**Commerce health dashboard:**
+**The startup log shows nothing from either module.** The module never ran. Confirm the package is
+in the site's `bin`, not merely referenced by a project that is not deployed.
 
-```kusto
-let timeRange = 1h;
-customMetrics
-| where timestamp > ago(timeRange)
-| where name in (
-    "Optimizely.Commerce.Orders.CheckoutsPerSecond",
-    "Optimizely.Commerce.Payments.SuccessRate",
-    "Optimizely.Commerce.Promotions.AverageExecutionTimeMs",
-    "Optimizely.Commerce.Inventory.AdjustmentsPerSecond"
-)
-| summarize avg(value) by name
-```
+**The site fails to start with a version mismatch.** The target framework and the CMS major
+disagree — see the support matrix above. This is the intended failure, not a bug.
+
+**Counters appear in `dotnet-counters` but not in Application Insights.** Collection is fine and
+export is not. Check the connection string, and turn adaptive sampling off while you verify: a
+counter that is being sampled away is indistinguishable from one that is not being collected.
+
+**A counter is missing entirely.** EventCounters that have never been written are not listed at
+all. Drive the matching traffic first. `CartLineItemCount` and `CartTotal` in particular need a
+populated cart to be saved or loaded.
+
+**Startup log is clean but no counters move.** The decorators registered but are not on the path
+your traffic takes. Resolve `IContentLoader` from the site's container and confirm the concrete
+type is `InstrumentedContentLoader`.
 
 ---
 
-## 🔧 Configuration
+## Current gaps
 
-### Enabling/Disabling Counters
+Stated plainly, because a monitoring package that overstates its coverage is worse than one that
+does not exist:
 
-Currently, all counters are enabled by default. Configuration options coming in future release.
-
-### Custom Counters
-
-To add your own custom counters:
-
-1. Implement `IPerformanceCounter` or extend `PerformanceCounterBase`
-2. Register in DI container
-3. Call `Initialize()` during startup
-
-**Example:**
-
-```csharp
-public class MyCustomCounter : PerformanceCounterBase
-{
-    public MyCustomCounter(
-        TelemetryClient telemetryClient,
-        ILogger<MyCustomCounter> logger)
-        : base(telemetryClient, logger)
-    {
-    }
-
-    public override string Name => "Optimizely.Custom.MyMetric";
-    public override string Category => "Custom";
-    public override string Subsystem => "MyFeature";
-    public override CounterType Type => CounterType.Rate;
-
-    public override void Initialize()
-    {
-        base.Initialize();
-        // Hook into events, start timers, etc.
-    }
-}
-```
+- **Application Insights auto-registration on V11.** Described above.
+- **No configuration.** Counters cannot be disabled individually or collectively yet.
+- **Commerce is `IOrderRepository` only.** Pricing, inventory, promotions and payments are not
+  instrumented.
+- **No search counters.** Neither Find (V11/V12) nor Graph (V13).
+- **No infrastructure counters.** Database, blob storage, Dynamic Data Store and Service Bus are
+  not instrumented here; the runtime-level equivalents are in the DotNetCounters package.
 
 ---
 
-## 🐛 Troubleshooting
+## Repository layout
 
-### "Unable to detect Optimizely CMS version"
-
-**Cause**: EPiServer assemblies not loaded or incorrect package version.
-
-**Solution**:
-- Ensure `EPiServer.CMS.Core` is installed
-- Verify package version matches your CMS version (11.x, 12.x, or 13.x)
-- Check that Optimizely initialization has completed
-
-### "Package compiled for V12 but detected V13"
-
-**Cause**: Wrong NuGet package build selected (usually .NET version mismatch).
-
-**Solution**:
-- V12 requires .NET 6 - upgrade or downgrade .NET version
-- V13 requires .NET 8+ - upgrade or downgrade CMS version
-- Do NOT run V12 on .NET 8 with this package
-
-### "Optimizely.Performance.DotNetCounters package is required but not found"
-
-**Cause**: Missing dependency.
-
-**Solution**:
-```bash
-dotnet add package Optimizely.Performance.DotNetCounters
-```
-
-### Counters not appearing in Application Insights
-
-1. Verify Application Insights connection string is configured
-2. Check startup logs for initialization errors
-3. Ensure `TelemetryClient` is registered in DI
-4. Allow 2-5 minutes for metrics to appear in portal
+| | |
+| --- | --- |
+| [src/](src/) | The three packages, plus `src/Shared` for code that touches EPiServer types from both |
+| [tests/](tests/) | 116 tests across net472, net8.0 and net10.0 — container registration, published counter names, and that the emitted set matches the subscribed set |
+| [examples/](examples/) | Per-version settings, and `verify-package-install`, which installs the built packages and asserts they bind on all six target frameworks |
+| [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) | Five-stage verification on a real site |
+| [ARCHITECTURE.md](ARCHITECTURE.md), [TELEMETRY_ARCHITECTURE.md](TELEMETRY_ARCHITECTURE.md) | Design notes |
 
 ---
 
-## 📊 Performance Impact
+## Related packages
 
-- Counter collection runs on background threads
-- Default reporting interval: 60 seconds
-- Negligible CPU/memory overhead (<1% in most scenarios)
-- Failed counter reads handled gracefully without exceptions
+- [Optimizely.Performance.DotNetCounters](https://github.com/jeff-fischer-optimizely/Optimizely.Performance.DotNetCounters)
+  — .NET runtime and ASP.NET counters. Required, and installed transitively.
 
----
-
-## 🔐 License
+## License
 
 Apache-2.0
-
----
-
-## 🤝 Support
-
-For issues and feature requests, please use the GitHub issue tracker.
-
----
-
-## 📚 Related Packages
-
-- [Optimizely.Performance.DotNetCounters](../OptiDotNetCounters) - .NET runtime and ASP.NET counters (required)
-- [Optimizely.Performance.ServiceBus](../OptiServiceBusInterceptor) - Service Bus message prioritization and telemetry
-
----
-
-## 🗺️ Counter Reference
-
-For a complete list of all available counters organized by category, see [COUNTER_REFERENCE.md](docs/COUNTER_REFERENCE.md).
-
-For counter tier classifications (Critical/Important/Operational), see the initial proposal in project documentation.
