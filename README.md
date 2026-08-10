@@ -104,6 +104,12 @@ The package publishes whether or not anything is listening. To see the numbers y
 - **`dotnet-counters`** on V12 or V13 — `dotnet-counters monitor --process-id <pid> Optimizely-Performance`.
 - **PerfView or your own `EventListener`** on V11, where `dotnet-counters` cannot attach.
 
+> **The V11 wire format is different.** `EventCounter` polling is a .NET Core construct, so the
+> `net472` build writes each measurement as a raw ETW event whose payload is `(name, value)` rather
+> than creating a named `EventCounter`. The counter *names* are identical — they arrive as the first
+> payload field instead of as the counter's identity — but a V11 listener reads events and does its
+> own aggregation, where a V12 or V13 collector reads pre-aggregated counters.
+
 See [examples/](examples/) for the settings to merge into a V11, V12 or V13 site, and
 [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) for how to confirm each stage on a real one.
 
@@ -168,11 +174,14 @@ shared parts, so installing both packages registers telemetry once.
 Nothing in the library listens to its own EventSource, and it does not republish the counters that
 `Optimizely.Performance.DotNetCounters` collects. Collection is entirely the host's business.
 
-**Overhead.** Per-operation counters are written inline — an interlocked add and a `Stopwatch`
-timestamp, no allocation, no closure. The cache and event decorators sit on paths that fire
-thousands of times a second, so those accumulate into interlocked fields and flush on a 60-second
-timer instead. What your collector *reads* is on its own schedule: `EventCounterCollectionModule`
-polls at 60 seconds by default, `dotnet-counters` at one.
+**Overhead.** Timing is allocation-free: `OperationTimer` is a `readonly struct` over a single
+`Stopwatch.GetTimestamp()`, and the decorators forward through explicit try/catch blocks rather
+than a `Measure<T>(name, () => ...)` helper, because that helper allocates a closure per call. When
+no collector is attached, `EventSource.IsEnabled()` short-circuits and the cost is a branch. The
+cache and event decorators sit on paths that fire thousands of times a second, so those accumulate
+into interlocked fields and flush on a 60-second timer instead of writing per call. What your
+collector *reads* is on its own schedule: `EventCounterCollectionModule` polls at 60 seconds by
+default, `dotnet-counters` at one.
 
 ### Startup log
 
@@ -392,7 +401,7 @@ does not exist:
 | --- | --- |
 | [src/](src/) | The three packages, plus `src/Shared` for code that touches EPiServer types from both |
 | [tests/](tests/) | 116 tests across net472, net8.0 and net10.0 — container registration, published counter names, and that the emitted set matches the subscribed set |
-| [examples/](examples/) | Per-version settings, and `verify-package-install`, which installs the built packages and asserts they bind on all six target frameworks |
+| [examples/](examples/) | Per-version settings, and `verify-package-install`, which installs the built packages from a local feed and asserts they bind and detect the right major. Builds on all six target frameworks; runs on whichever runtimes are installed |
 | [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) | Five-stage verification on a real site |
 | [ARCHITECTURE.md](ARCHITECTURE.md), [TELEMETRY_ARCHITECTURE.md](TELEMETRY_ARCHITECTURE.md) | Design notes |
 
