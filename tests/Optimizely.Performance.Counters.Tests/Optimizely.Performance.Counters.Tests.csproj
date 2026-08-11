@@ -33,6 +33,15 @@
     <ProjectReference Include="..\..\src\Optimizely.Performance.Counters.Commerce\Optimizely.Performance.Counters.Commerce.csproj" />
   </ItemGroup>
 
+  <!-- DeferredLogger is internal, and it is linked source rather than a type in Core, so it exists
+       once inside each of the CMS and Commerce assemblies. Neither copy is reachable from here and
+       InternalsVisibleTo on both would make the name ambiguous. Compiling the same file is how
+       linked shared source gets tested; ModuleSupport is not linked because it needs the CMSxx
+       symbols and the EPiServer initialization types. -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Shared\DeferredLogger.cs" LinkBase="Shared" />
+  </ItemGroup>
+
   <!-- The projects under test set PrivateAssets="compile" on their Optimizely references, so the
        compile-time assemblies do not flow here. The tests reference them directly at the same
        versions. -->

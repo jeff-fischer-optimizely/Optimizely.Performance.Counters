@@ -58,8 +58,15 @@ namespace Optimizely.Performance.Counters.VersionDetection
 
         private static InvalidOperationException Fail(string message, ILogger? logger)
         {
-            logger?.LogError("{Message}", message);
-            return new InvalidOperationException(message);
+            // The detail dump goes in the exception message, not only through the logger. The
+            // callers are initialization modules, and what they log during ConfigureContainer is
+            // buffered until Initialize - which never runs if this throws. The exception is
+            // therefore the only thing that reaches the operator, and "detected V12, expected V13"
+            // without the assembly versions behind it is the half of the answer that does not help.
+            var detail = message + "\n\n" + OptimizelyVersionDetector.GetDetailedVersionInfo();
+
+            logger?.LogError("{Message}", detail);
+            return new InvalidOperationException(detail);
         }
     }
 }

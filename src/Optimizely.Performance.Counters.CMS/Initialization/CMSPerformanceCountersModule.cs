@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Optimizely.Performance.Counters.CMS.Decorators;
 using Optimizely.Performance.Counters.Core.Telemetry;
+using Optimizely.Performance.Counters.Shared;
 using Optimizely.Performance.Counters.VersionDetection;
 using static Optimizely.Performance.Counters.Shared.ModuleSupport;
 
@@ -29,6 +30,11 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
     {
         private ILogger<CMSPerformanceCountersModule>? _logger;
 
+        // Held separately from _logger so Initialize knows what to flush. ConfigureContainer runs
+        // before the container can be resolved from, so everything it logs is buffered here and
+        // replayed through the host's own logger once one exists.
+        private DeferredLogger<CMSPerformanceCountersModule>? _deferredLogger;
+
         /// <summary>
         /// Registers the metric tracker and wraps the instrumented Optimizely services. Runs while
         /// the container is being built, before any module initializes.
@@ -36,7 +42,7 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
         /// <param name="context">Container configuration context supplied by the framework.</param>
         public void ConfigureContainer(ServiceConfigurationContext context)
         {
-            _logger = ResolveLogger<CMSPerformanceCountersModule>(context);
+            _logger = _deferredLogger = ResolveLogger<CMSPerformanceCountersModule>(context);
 
             // Optimizely.Performance.DotNetCounters is a hard dependency of the Core package, so
             // if this module loaded at all, it is present. There is nothing to validate.
@@ -61,11 +67,17 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
         }
 
         /// <summary>
-        /// No-op beyond logging. All registration happens in <see cref="ConfigureContainer"/>.
+        /// Replays what <see cref="ConfigureContainer"/> logged, now that a container exists to
+        /// resolve the host's own logger from. No registration happens here.
         /// </summary>
         /// <param name="context">Initialization context supplied by the framework.</param>
-        public void Initialize(InitializationEngine context) =>
+        public void Initialize(InitializationEngine context)
+        {
+            _logger = FlushLogger(_deferredLogger, context) ?? _logger;
+            _deferredLogger = null;
+
             _logger?.LogInformation("Optimizely CMS Performance Counters initialized");
+        }
 
         /// <summary>
         /// No-op beyond logging. The decorators are owned by the container and torn down with it.
