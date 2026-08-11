@@ -118,8 +118,43 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         }
 
 #if NETFRAMEWORK
+        /// <summary>
+        /// Writes one measurement as a raw ETW event carrying (name, value).
+        /// </summary>
+        /// <remarks>
+        /// WriteEventCore rather than the obvious <c>WriteEvent(1, name, value)</c>. EventSource has
+        /// fast overloads for (string, int) and (string, long) but none for (string, double), so
+        /// that call binds to <c>WriteEvent(int, params object[])</c> - which allocates an object[2]
+        /// and boxes the double on every measurement, then walks the arguments reflectively. On
+        /// this target framework that is the only wire format there is, so it is the whole hot path.
+        /// <para>
+        /// The payload is unchanged. EventSource reads the shape from this method's own signature,
+        /// so a listener still decodes (string, double) exactly as before. The string size includes
+        /// its null terminator, which is what EventSource expects of a string field.
+        /// </para>
+        /// </remarks>
         [Event(1, Level = EventLevel.Informational)]
-        private void WriteMetricEvent(string name, double value) => WriteEvent(1, name, value);
+        private unsafe void WriteMetricEvent(string name, double value)
+        {
+            // fixed on a null string yields a null pointer, which the old params-object[] overload
+            // would have turned into an empty string rather than a malformed payload. No caller
+            // passes null - the names are constants - but the buffer arithmetic below is not the
+            // place to find out otherwise.
+            var text = name ?? string.Empty;
+
+            fixed (char* pName = text)
+            {
+                var data = stackalloc EventData[2];
+
+                data[0].DataPointer = (IntPtr)pName;
+                data[0].Size = checked((text.Length + 1) * sizeof(char));
+
+                data[1].DataPointer = (IntPtr)(&value);
+                data[1].Size = sizeof(double);
+
+                WriteEventCore(1, 2, data);
+            }
+        }
 #endif
 
 #if NET6_0_OR_GREATER

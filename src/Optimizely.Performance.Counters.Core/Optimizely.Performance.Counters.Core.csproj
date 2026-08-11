@@ -39,4 +39,18 @@
     <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="8.0.0" />
   </ItemGroup>
 
+  <!--
+    net472 only, and only for OptimizelyPerformanceEventSource.WriteMetricEvent. That target
+    framework has no EventCounter to write through, so every measurement goes out as a raw ETW
+    event, and EventSource has no WriteEvent(int, string, double) overload to carry it - the call
+    binds to WriteEvent(int, params object[]), which allocates an array and boxes the double on
+    every measurement. WriteEventCore takes a stack buffer instead, and needs a pointer to do it.
+
+    Deliberately not global: nothing else in this repository is unsafe, and the .NET Core builds
+    have no reason to be.
+  -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net472'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
 </Project>
