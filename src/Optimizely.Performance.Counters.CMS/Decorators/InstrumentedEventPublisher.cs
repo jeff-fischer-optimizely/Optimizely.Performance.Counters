@@ -31,7 +31,6 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
         private long _remoteEvents;
         private long _remoteEventFailures;
         private long _totalRemoteEventTicks;
-        private long _remoteEventCount;
 
         /// <summary>
         /// Wraps the publisher resolved by the container and starts the metric flush timer.
@@ -127,7 +126,6 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
             if (broadcast)
             {
                 Interlocked.Increment(ref _remoteEvents);
-                Interlocked.Increment(ref _remoteEventCount);
                 // Accumulated in microseconds as a long so the running total stays exact under
                 // Interlocked.Add; sub-millisecond publishes would otherwise round away to zero.
                 Interlocked.Add(ref _totalRemoteEventTicks, (long)(elapsedMs * 1000.0));
@@ -159,7 +157,6 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
                 var remoteEvents = Interlocked.Exchange(ref _remoteEvents, 0);
                 var remoteFailures = Interlocked.Exchange(ref _remoteEventFailures, 0);
                 var totalRemoteMicroseconds = Interlocked.Exchange(ref _totalRemoteEventTicks, 0);
-                var remoteCount = Interlocked.Exchange(ref _remoteEventCount, 0);
 
                 var totalEvents = localEvents + remoteEvents;
 
@@ -171,9 +168,13 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
                 _metricTracker.TrackMetric(Names.RemoteEventsPerSecond, remoteEventsPerSecond);
                 _metricTracker.TrackMetric(Names.RemoteEventFailuresPerSecond, remoteFailuresPerSecond);
 
-                if (remoteCount > 0)
+                // remoteEvents doubles as the divisor. It is incremented in exactly the same branch
+                // that adds to _totalRemoteEventTicks and nowhere else - a failed broadcast lands
+                // on _remoteEventFailures instead - so a second counter tracking the same number
+                // was one more atomic per publish for nothing.
+                if (remoteEvents > 0)
                 {
-                    var avgDeliveryTimeMs = totalRemoteMicroseconds / 1000.0 / remoteCount;
+                    var avgDeliveryTimeMs = totalRemoteMicroseconds / 1000.0 / remoteEvents;
                     _metricTracker.TrackMetric(Names.AverageRemoteEventDeliveryTimeMs, avgDeliveryTimeMs);
                 }
 
