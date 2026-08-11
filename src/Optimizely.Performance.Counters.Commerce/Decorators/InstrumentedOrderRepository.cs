@@ -432,21 +432,31 @@ namespace Optimizely.Performance.Counters.Commerce.Decorators
         /// <summary>
         /// Emits cart size and value. No-op for anything that is not a cart, so callers can
         /// pass the result of an <c>as ICart</c> without a null check of their own.
+        /// <para>
+        /// Gated on <see cref="IMetricTracker.IsEnabled"/>, unlike every other track method here.
+        /// Both values below cost real work to obtain rather than merely being handed to us, and
+        /// this runs on eight call sites covering every load, save, create and delete - so with no
+        /// collector attached that work would be pure waste on the caller's thread.
+        /// </para>
         /// </summary>
         private void TrackCartMetrics(ICart? cart)
         {
-            if (cart == null)
+            if (cart == null || !_metricTracker.IsEnabled)
             {
                 return;
             }
 
             try
             {
-                var lineItemCount = cart.GetAllLineItems().Count();
                 _metricTracker.TrackMetric(
                     Names.CartLineItemCount,
-                    lineItemCount);
+                    CountLineItems(cart));
 
+                // GetTotal() is not an accessor. It resolves IOrderGroupCalculator and runs the
+                // whole subtotal-shipping-handling-tax pipeline, which on a site with an external
+                // tax provider leaves the process. It is the price of the counter and there is no
+                // cheaper way to the number, which is why the IsEnabled gate above exists.
+                //
                 // Money is a struct - GetTotal() always returns a value, never null.
                 var total = cart.GetTotal();
                 _metricTracker.TrackMetric(
@@ -458,6 +468,25 @@ namespace Optimizely.Performance.Counters.Commerce.Decorators
             {
                 _logger.LogError(ex, "Failed to track cart metrics");
             }
+        }
+
+        /// <summary>
+        /// Counts line items by summing the collection counts rather than calling
+        /// <c>GetAllLineItems().Count()</c>, which chains two SelectMany iterators and walks every
+        /// line item to arrive at the same number.
+        /// </summary>
+        private static int CountLineItems(IOrderGroup order)
+        {
+            var count = 0;
+            foreach (var form in order.Forms)
+            {
+                foreach (var shipment in form.Shipments)
+                {
+                    count += shipment.LineItems.Count;
+                }
+            }
+
+            return count;
         }
 
         #endregion

@@ -9,6 +9,17 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
     public interface IMetricTracker
     {
         /// <summary>
+        /// Whether anything is currently collecting. False means every <c>TrackMetric</c> call is
+        /// going to be discarded.
+        /// <para>
+        /// Call this only to skip work a metric needs but the caller does not - deriving a value
+        /// that is expensive to obtain, for instance. The <c>TrackMetric</c> overloads perform the
+        /// same check themselves, so guarding an ordinary emit with it buys nothing.
+        /// </para>
+        /// </summary>
+        bool IsEnabled { get; }
+
+        /// <summary>
         /// Tracks a metric value.
         /// </summary>
         /// <param name="name">Metric name (e.g., "Optimizely.CMS.Content.LoadTimeMs")</param>

@@ -30,6 +30,9 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         public EventCounterMetricTracker() => _eventSource = OptimizelyPerformanceEventSource.Instance;
 
         /// <inheritdoc />
+        public bool IsEnabled => _eventSource.IsEnabled();
+
+        /// <inheritdoc />
         public void TrackMetric(string name, double value) => _eventSource.TrackMetric(name, value);
 
         /// <inheritdoc />

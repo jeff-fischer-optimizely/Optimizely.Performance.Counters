@@ -43,6 +43,12 @@ namespace Optimizely.Performance.Counters.Tests.Infrastructure
         /// <summary>Distinct counter names emitted, without dimensions.</summary>
         public IEnumerable<string> Names => _metrics.Select(m => m.Name).Distinct();
 
+        /// <summary>
+        /// Always collecting. A test that wants to assert a decorator skips its expensive work when
+        /// nothing is listening should set this to false.
+        /// </summary>
+        public bool IsEnabled { get; set; } = true;
+
         public void TrackMetric(string name, double value) =>
             Record(name, value);
 
