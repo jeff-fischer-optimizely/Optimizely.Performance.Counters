@@ -113,11 +113,13 @@ namespace Optimizely.Performance.Counters.Tests.Infrastructure
                     "If the counter cache was renamed, update PublishedCounterNames to match.");
             }
 
-            var counters = (Dictionary<string, EventCounter>?)field.GetValue(source);
+            // Read through IReadOnlyDictionary rather than the concrete type, so swapping the cache
+            // implementation again does not turn this into an InvalidCastException.
+            var counters = (IReadOnlyDictionary<string, EventCounter>?)field.GetValue(source);
 
-            // No lock beyond the one already held: the drive has returned, and the reporting timers
-            // behind the cache and event-publisher decorators run on a 60 second interval, so
-            // nothing else in the process is writing by the time this runs.
+            // No synchronization beyond the lock already held: the drive has returned, and the
+            // reporting timers behind the cache and event-publisher decorators run on a 60 second
+            // interval, so nothing else in the process is writing by the time this runs.
             return counters == null ? Array.Empty<string>() : new List<string>(counters.Keys);
 #endif
         }

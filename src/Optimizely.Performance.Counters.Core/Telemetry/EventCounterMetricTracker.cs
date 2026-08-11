@@ -1,5 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
+#if NET6_0_OR_GREATER
+using System.Collections.Concurrent;
+#endif
 using System.Diagnostics.Tracing;
 
 namespace Optimizely.Performance.Counters.Core.Telemetry
@@ -67,9 +69,18 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         public static readonly OptimizelyPerformanceEventSource Instance = new OptimizelyPerformanceEventSource();
 
 #if NET6_0_OR_GREATER
-        private readonly Dictionary<string, System.Diagnostics.Tracing.EventCounter> _counters = new Dictionary<string, System.Diagnostics.Tracing.EventCounter>();
+        // Concurrent, not a Dictionary under a lock. This is written exactly once per counter name
+        // - thirty times over the life of the process - and read on every single measurement, so a
+        // lock here is a process-wide serialization point in the middle of content loading. A page
+        // rendering 380 content loads emits roughly 950 measurements, and every one of them would
+        // queue on the same monitor.
+        //
+        // This does not make writes lock free: EventCounter.WriteMetric takes its own lock on the
+        // counter. It splits one global lock into thirty per-counter ones, so threads contend only
+        // when they hit the same counter.
+        private readonly ConcurrentDictionary<string, System.Diagnostics.Tracing.EventCounter> _counters =
+            new ConcurrentDictionary<string, System.Diagnostics.Tracing.EventCounter>(StringComparer.Ordinal);
 #endif
-        private readonly object _lock = new object();
 
         private OptimizelyPerformanceEventSource() : base(EventSourceSettings.EtwSelfDescribingEventFormat)
         {
@@ -93,16 +104,12 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
                 return;
 
 #if NET6_0_OR_GREATER
-            lock (_lock)
+            if (!_counters.TryGetValue(name, out var counter))
             {
-                if (!_counters.TryGetValue(name, out var counter))
-                {
-                    counter = new System.Diagnostics.Tracing.EventCounter(name, this);
-                    _counters[name] = counter;
-                }
-
-                counter.WriteMetric(value);
+                counter = GetOrCreateCounter(name);
             }
+
+            counter.WriteMetric(value);
 #else
             // .NET Framework 4.7.2: Use WriteEvent to emit raw events
             // Application Insights will collect these via EventSource integration
@@ -115,6 +122,32 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         private void WriteMetricEvent(string name, double value) => WriteEvent(1, name, value);
 #endif
 
+#if NET6_0_OR_GREATER
+        /// <summary>
+        /// The cold half of <see cref="TrackMetric"/>, kept out of it so the hot path is a lookup
+        /// and a write.
+        /// </summary>
+        /// <remarks>
+        /// Not GetOrAdd with a factory: ConcurrentDictionary may run a factory more than once under
+        /// contention, and constructing an EventCounter is not free of side effects - it publishes
+        /// itself to this EventSource. A losing racer's counter would stay registered and report
+        /// alongside the winner. So the loser is disposed, which unregisters it.
+        /// </remarks>
+        [NonEvent]
+        private System.Diagnostics.Tracing.EventCounter GetOrCreateCounter(string name)
+        {
+            var created = new System.Diagnostics.Tracing.EventCounter(name, this);
+            var winner = _counters.GetOrAdd(name, created);
+
+            if (!ReferenceEquals(winner, created))
+            {
+                created.Dispose();
+            }
+
+            return winner;
+        }
+#endif
+
         /// <summary>
         /// Disposes the lazily created counters before handing off to the base EventSource.
         /// </summary>
@@ -124,14 +157,12 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             if (disposing)
             {
 #if NET6_0_OR_GREATER
-                lock (_lock)
+                foreach (var counter in _counters.Values)
                 {
-                    foreach (var counter in _counters.Values)
-                    {
-                        counter.Dispose();
-                    }
-                    _counters.Clear();
+                    counter.Dispose();
                 }
+
+                _counters.Clear();
 #endif
             }
 
