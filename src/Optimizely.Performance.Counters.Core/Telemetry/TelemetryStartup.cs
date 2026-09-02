@@ -39,9 +39,12 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
                 }
                 else
                 {
+                    // Deliberately no success line here. RegisterEventCounters reports its own
+                    // outcome, and it reports failure by logging rather than by throwing - so an
+                    // unconditional "registered" line from out here is printed just as cheerfully
+                    // when nothing was registered at all. That is what the log said for as long as
+                    // the registration was broken, which is part of why nobody noticed.
                     ApplicationInsightsRegistration.RegisterEventCounters(services, logger);
-                    logger?.LogInformation(
-                        "Optimizely EventCounters registered with Application Insights EventCounterCollectionModule");
                 }
             }
 

@@ -72,4 +72,25 @@
     <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV15Version)" />
   </ItemGroup>
 
+  <!--
+    Application Insights, referenced by the tests only. Core reaches it purely by reflection and
+    must keep doing so - it is an optional dependency, and a site without it has to load Core
+    without dragging the AI assemblies in. Reflection is also why this reference has to exist here:
+    the binding is resolved by string at runtime, so nothing but a real EventCounterCollectionModule
+    can tell whether it still binds. See ApplicationInsightsRegistrationTests.
+
+    2.23.0, the last of the 2.x line, on both target frameworks. It is netstandard2.0, so it loads
+    on either. The 3.x line is deliberately not tested here because there is nothing in it to test:
+    3.0 re-based the SDK on OpenTelemetry and dropped EventCounterCollectionModule,
+    ConfigureTelemetryModule and the whole telemetry-module concept, so the registration in Core has
+    no counterpart there at all. Supporting it is a feature, not a version bump - see the note in
+    docs/SMOKE_TEST.md.
+
+    Not referenced on net472. V11 has no IServiceCollection to register against, so there is no
+    registration path there to test - see the gap noted in docs/SMOKE_TEST.md.
+  -->
+  <ItemGroup Condition="'$(TargetFramework)' != 'net472'">
+    <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.23.0" />
+  </ItemGroup>
+
 </Project>

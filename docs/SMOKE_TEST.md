@@ -105,7 +105,13 @@ the traffic took. Resolve `IContentLoader` from the site's container and check i
 
 ## Stage 4 - counters in Application Insights Live Metrics (V12 / V13)
 
-Not available on V11 - see the gap noted in Stage 2.
+Not available on V11 - see the gap noted in Stage 2. Needs the 2.x Application Insights SDK; see the
+note on 3.x under Known gaps.
+
+The counters are registered with `EventCounterCollectionModule` by reflection, and everything up to
+the point Azure gets involved is covered by `ApplicationInsightsRegistrationTests` - so if this stage
+fails while those tests pass, the problem is the connection string or sampling rather than the
+registration.
 
 1. Azure portal, Application Insights resource, **Live Metrics**.
 2. Restart the site and drive the same traffic.
@@ -134,7 +140,9 @@ a sampled-away counter is indistinguishable from an uncollected one.
 On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
 
 - Both modules log their own registration, and the Commerce one does not re-register the CMS
-  services. Telemetry registration is idempotent and safe to run twice.
+  services. Telemetry registration is idempotent and safe to run twice: the second pass skips the
+  counters the first already asked Application Insights for, so nothing is collected or billed
+  twice. `ApplicationInsightsRegistrationTests` covers this without a site.
 - `Optimizely.CMS.*` and `Optimizely.Commerce.*` counters both appear, from one EventSource.
 
 ---
@@ -143,6 +151,13 @@ On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
 
 - **Application Insights on V11.** `TelemetryStartup.Configure` needs an `IServiceCollection`, and
   V11 supplies `IServiceConfigurationProvider`. Detection runs and is logged; nothing is subscribed.
+- **Application Insights 3.x.** Only the 2.x SDK is supported. 3.0 re-based the SDK on
+  OpenTelemetry and removed `EventCounterCollectionModule`, `ConfigureTelemetryModule` and the
+  telemetry-module concept the registration is built on, so on a site running 3.x nothing is
+  subscribed and the "no telemetry system detected" path does not fire either - `TelemetryClient`
+  still resolves, so detection reports Application Insights as present. Collecting EventCounters
+  under 3.x means OpenTelemetry's own EventCounters instrumentation, which is a feature rather than
+  a version bump.
 - **No configuration system.** Counters cannot be turned off individually, or at all, yet.
 - **`CartLineItemCount` and `CartTotal`** need a populated cart, so they only move once a real
   Commerce cart is saved or loaded.
