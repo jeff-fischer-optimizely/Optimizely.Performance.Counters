@@ -84,6 +84,30 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
 
         private OptimizelyPerformanceEventSource() : base(EventSourceSettings.EtwSelfDescribingEventFormat)
         {
+#if NET6_0_OR_GREATER
+            // Every counter, up front, before anything can subscribe - not lazily on first
+            // measurement, which is what this used to do and which published nothing to anybody.
+            //
+            // An EventCounter reports through a CounterGroup, and the CounterGroup is created by the
+            // first EventCounter on the source. It arms its polling timer by handling the Enable
+            // command, and it can only handle commands that arrive after it exists. A collector that
+            // attaches before the first counter is created therefore arms nothing: the counters
+            // appear afterwards, join a group whose timer was never started, and are never polled
+            // for that subscriber. Not for a while - never.
+            //
+            // That is the normal order of events on a real site. Application Insights subscribes
+            // from OnEventSourceCreated at startup; the first content load is later. Verified with
+            // an EventListener: attach, then create, and thirty counters deliver nothing over eight
+            // seconds of continuous traffic; create, then attach, and all of them arrive on the
+            // first tick.
+            //
+            // Creating them here also means dotnet-counters lists all thirty from the start, sitting
+            // at zero, rather than only the ones some decorator has already hit.
+            foreach (var name in EventCounterRegistry.GetAllCounterNames())
+            {
+                GetOrCreateCounter(name);
+            }
+#endif
         }
 
         /// <summary>

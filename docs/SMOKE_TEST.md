@@ -77,7 +77,15 @@ dotnet-counters monitor --process-id <pid> Optimizely-Performance
 Then drive some traffic - load a page, edit and publish content, add something to a cart.
 
 Expected: the counters below appear and move. Counters are polled on an interval, so allow a few
-seconds; a counter no decorator has hit yet will not be listed at all.
+seconds.
+
+All thirty are listed from the moment the EventSource is constructed, whether or not any traffic has
+reached them yet, so a counter sitting at zero means the decorator that owns it has not been hit -
+not that anything is broken. They are created up front deliberately: an EventCounter is polled
+through a group that arms its timer when the collector attaches, and the group does not exist until
+the first counter does, so counters created lazily on first use were invisible to any collector that
+attached before them. That is the normal order on a site, which is why `dotnet-counters` and
+Application Insights used to show nothing at all here.
 
 | Prefix | Counters |
 | --- | --- |
