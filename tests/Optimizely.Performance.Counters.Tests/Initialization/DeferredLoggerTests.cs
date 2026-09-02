@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Logging;
 using Optimizely.Performance.Counters.Shared;
+using Optimizely.Performance.Counters.Tests.Infrastructure;
 using Xunit;
 
 namespace Optimizely.Performance.Counters.Tests.Initialization
@@ -86,43 +87,5 @@ namespace Optimizely.Performance.Counters.Tests.Initialization
             Assert.Single(sink.Entries);
         }
 
-        private sealed class RecordingLogger : ILogger
-        {
-            internal List<Entry> Entries { get; } = new List<Entry>();
-
-            // Explicit for the same reason DeferredLogger's is: the notnull constraint on this
-            // member arrived in Microsoft.Extensions.Logging.Abstractions 7.0.0, so declaring it
-            // either way warns on one half of the target frameworks.
-            IDisposable ILogger.BeginScope<TState>(TState state) => throw new NotSupportedException();
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter) =>
-                Entries.Add(new Entry(logLevel, state, exception, formatter(state, exception)));
-
-            internal sealed class Entry
-            {
-                internal Entry(LogLevel level, object? state, Exception? exception, string message)
-                {
-                    Level = level;
-                    State = state;
-                    Exception = exception;
-                    Message = message;
-                }
-
-                internal LogLevel Level { get; }
-
-                internal object? State { get; }
-
-                internal Exception? Exception { get; }
-
-                internal string Message { get; }
-            }
-        }
     }
 }
