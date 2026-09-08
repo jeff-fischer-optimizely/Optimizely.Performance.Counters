@@ -80,18 +80,25 @@ loaded into matches.
 
 | Optimizely | CMS | Commerce | Target framework |
 | --- | --- | --- | --- |
-| **V11** | 11.21.5+ | 13.x | `net472` |
-| **V12** | 12.24.1+ | 14.x | `net6.0`, `net7.0`, `net8.0`, `net9.0` |
-| **V13** | 13.1.1+ | 15.x | `net10.0` |
+| **V11** | 11.11.1+ | 13.0.0+ | `net472` |
+| **V12** | 12.10.0+ | 14.5.0+ | `net6.0`, `net7.0`, `net8.0`, `net9.0` |
+| **V13** | 13.0.2+ | 15.0.0+ | `net10.0` |
+
+These are minimums, not pins — a site ahead of them installs the same package. They are set as low
+as each major allows, on the grounds that a site which has drifted behind is exactly the one most
+likely to want performance counters. Only the V12 CMS minimum is higher than we would like: 12.10.0
+is inherited from `Optimizely.Performance.DotNetCounters`, which these packages always ship beside.
+The reasoning behind each number is recorded in [Directory.Build.props](Directory.Build.props).
 
 V12 on .NET 8 and .NET 9 is supported — those are ordinary V12 builds, not V13 builds. The only
 combination that cannot work is a CMS major on a target framework mapped to a different one, and
 that fails loudly at startup rather than misbehaving quietly.
 
-> **NU1608 on restore is expected and harmless.** `Optimizely.Performance.DotNetCounters` 1.0.0
-> declares CMS minimums that sit above the floor Commerce names, so NuGet lifts `EPiServer.CMS.Core`
-> past the exact version its sibling `EPiServer.CMS.AspNet(Core)` pins to. A site already running a
-> current CMS lifts `AspNet(Core)` to match through its own reference. See the note in
+> **NU1608 on restore is expected and harmless.** Commerce names `EPiServer.CMS.Core` as a range and
+> its sibling `EPiServer.CMS.AspNet(Core)` pins that range's floor exactly, so NuGet lifts
+> `CMS.Core` past the pin to reach the minimum `Optimizely.Performance.DotNetCounters` asks for. A
+> site already running a current CMS lifts `AspNet(Core)` to match through its own reference, so
+> this shows up on a bare test project rather than in production. See the note in
 > [Directory.Build.props](Directory.Build.props).
 
 ### Making the counters visible
@@ -217,7 +224,7 @@ documentation.
 
 ### The common ground: Optimizely publishes no telemetry of its own
 
-On **every** supported version — CMS 11.21.5, 12.24.1 and 13.1.1, and Commerce 13, 14 and 15 —
+On every version checked — CMS 11.21.5, 12.24.1 and 13.1.1, and Commerce 13, 14 and 15 —
 `EPiServer.dll`, `EPiServer.Framework.dll` and the Commerce assemblies contain no reference to
 `EventSource`, `ActivitySource`, `DiagnosticSource`, `DiagnosticListener`,
 `System.Diagnostics.Metrics`, `PerformanceCounterCategory` or `CounterCreationData`. There is no

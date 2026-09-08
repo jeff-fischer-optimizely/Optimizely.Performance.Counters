@@ -33,11 +33,53 @@ Repeat with `-f net472`, `net6.0`, `net7.0`, `net8.0`, `net9.0`. `Compiled for` 
 net472, V12 on net6.0 through net9.0, and V13 on net10.0, and should always match
 `Detected at runtime`. The process exits non-zero on failure.
 
-> **NU1608 on restore is expected.** `Optimizely.Performance.DotNetCounters` 1.0.0 declares CMS
-> minimums of 11.21.5 / 12.24.1 / 13.1.1, which sit above the floor Commerce names, so NuGet lifts
-> `EPiServer.CMS.Core` past the exact version its sibling `EPiServer.CMS.AspNet(Core)` pins to. It is
-> harmless on a site already running a current CMS, because the site's own reference lifts
-> `AspNet(Core)` to match. See the note in `Directory.Build.props`.
+> **NU1608 on restore is expected.** Commerce names `EPiServer.CMS.Core` as a range and its sibling
+> `EPiServer.CMS.AspNetCore` pins that range's floor exactly, so on the V12 band NuGet settles
+> `AspNetCore` on 12.4.0 - which requires `CMS.Core (= 12.4.0)` - and then `Optimizely.Performance.
+> DotNetCounters` lifts `CMS.Core` to its own 12.10.0 minimum, past the pin. Four lines, two
+> distinct warnings reported once per restore pass.
+>
+> It does not appear on a real site, only on a project like this one that references nothing but
+> these packages: a site references `CMS.AspNetCore` itself, which lifts it to match. Removing it
+> here means lowering the CMS minimums in DotNetCounters, or raising the Commerce floor to a release
+> whose own CMS floor is already above 12.10.0 - which would cost reach to silence a warning. See
+> the note in `Directory.Build.props`.
+
+---
+
+## Testing at the ceiling
+
+The packages are built against the **oldest** Optimizely each target framework supports, so that a
+site which has drifted behind can still install them - see the note in `Directory.Build.props`. The
+default test run therefore proves the floor and says nothing about current Optimizely, so run the
+other end too:
+
+```
+dotnet test tests/Optimizely.Performance.Counters.Tests \
+  -p:OptimizelyV11Version=11.21.5 \
+  -p:OptimizelyV12Version=12.24.1 \
+  -p:OptimizelyV13Version=13.1.1 \
+  -p:CommerceV13Version=13.37.2 \
+  -p:CommerceV14Version=14.45.5 \
+  -p:CommerceV15Version=15.1.0
+```
+
+Both ends must be green before a release. 14.45.5 rather than 14.46.0 because 14.46 ships no net6.0
+or net7.0 assembly and one property covers the whole V12 band. To cover 14.46 as well:
+
+```
+dotnet test tests/Optimizely.Performance.Counters.Tests \
+  -p:TargetFrameworks=net8.0 -p:OptimizelyV12Version=12.24.1 -p:CommerceV14Version=14.46.0
+```
+
+and again with `net9.0`. `-p:TargetFrameworks=` rather than `-f`: `-f` filters which built target
+framework gets run, but restore still walks every target framework of the referenced projects, so
+the Commerce project's net6.0 target would try to resolve a Commerce release that has no net6.0
+assembly and fail with NU1202 before anything is built.
+
+A failure at the ceiling but not the floor means an Optimizely interface changed shape underneath a
+decorator. A failure at the floor but not the ceiling means something in the source has started
+using an API newer than the floor, and either the call or the floor has to move.
 
 ---
 

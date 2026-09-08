@@ -2,14 +2,14 @@
 
   <PropertyGroup>
     <!-- Every target framework the packages ship, less net7.0. The three majors are the point -
-         net472 = V11, net6.0-net9.0 = V12, net10.0 = V13 - but the V12 band is not one thing: it
-         spans two Commerce majors' worth of assemblies, because Commerce 14.46 dropped net6.0 and
-         net7.0 and that band therefore compiles against 14.45.5 at its low end and 14.46.0 at its
-         high end. Testing only net8.0 left the older half of the band unproven.
+         net472 = V11, net6.0-net9.0 = V12, net10.0 = V13 - and within the V12 band every target now
+         compiles against the same Optimizely versions, so what the four of them still prove is the
+         runtime rather than the references. That is worth keeping: the counters are EventCounters,
+         and EventCounter, CounterGroup and the polling behaviour underneath them are BCL types that
+         changed across .NET 6 to 9.
 
-         net7.0 is left out on purpose. It is the one target framework that shares both its sources
-         and its Optimizely package versions with another that is tested (net6.0), so it is the one
-         whose omission costs nothing. -->
+         net7.0 is left out because it is out of support and adds nothing net6.0 does not already
+         cover. Everything else here is a target somebody could actually be running. -->
     <TargetFrameworks>net472;net6.0;net8.0;net9.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
@@ -64,16 +64,9 @@
     <PackageReference Include="EPiServer.ServiceLocation.StructureMap" Version="2.0.3" />
   </ItemGroup>
 
-  <!-- .NET 6 (V12 / Commerce 14) - Commerce 14.46 dropped this target, so it stays on the last
-       release that still ships a net6.0 assembly. Mirrors the Commerce project's own split. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'net6.0'">
-    <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV12Version)" />
-    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" />
-    <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV14LegacyVersion)" />
-  </ItemGroup>
-
-  <!-- .NET 8-9 (V12 / Commerce 14) -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
+  <!-- .NET 6-9 (V12 / Commerce 14). One Commerce version across the band, mirroring the Commerce
+       project - see the note there for why the old net6.0/net8.0 split went away. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net6.0' Or '$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV12Version)" />
     <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" />
     <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV14Version)" />

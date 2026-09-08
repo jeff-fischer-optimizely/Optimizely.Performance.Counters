@@ -33,8 +33,9 @@ EventSource and the log says so, with the `dotnet-counters` command to read them
 
 ## .NET 6 and .NET 7
 
-Commerce 14.46 dropped both, so on those two target frameworks the Commerce package builds against
-14.45.5 - the last release that still ships a `net6.0` assembly. The CMS package is unaffected.
+Both runtimes are out of Microsoft support. They are still in the matrix, but net8.0 or net9.0 is
+the better target for a site being set up now.
 
-Both runtimes are also out of Microsoft support. They are still in the matrix, but net8.0 or net9.0
-is the better target for a site being set up now.
+Nothing about the Commerce package differs across the V12 band: all four target frameworks build
+against Commerce 14.5.0, the oldest release with a `net6.0` assembly, and that is a minimum rather
+than a pin. A net8.0 site running Commerce 14.46 installs the same package.

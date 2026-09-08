@@ -34,37 +34,71 @@
     the packages promise. Raising one is a deliberate change to the support matrix; see
     OptimizelyVersionDetector for the target-framework side of the same map.
 
-    The CMS versions are not free choices. Optimizely.Performance.DotNetCounters 1.0.0 - the hard
-    dependency these packages always ship beside - declares EPiServer.CMS.Core and EPiServer.Framework
-    minimums of 11.21.5 / 12.24.1 / 13.1.1, and it reaches every consumer through Core. Declaring
-    anything lower here is an NU1605 downgrade error, so these three match it exactly.
+    Each is the LOWEST version that works, not the newest available. A NuGet version is a floor
+    rather than a pin, so the number chosen here is the oldest Optimizely a site may be running and
+    still install these packages; a site that is ahead is unaffected either way. Partners and
+    customers routinely run some way behind current, and a floor set to whatever was newest on the
+    day locks those sites out of a diagnostic package for no benefit to anyone. So each of these is
+    pushed down until something concrete stops it, and what stopped it is recorded below.
 
-    That inherited floor has a cost worth knowing about. EPiServer.CMS.AspNet(Core) pins its sibling
-    EPiServer.CMS.Core to its own exact version, while Commerce asks for both as a range and so gets
-    AspNetCore at the range floor. Because the inherited minimum sits above that floor, CMS.Core is
-    lifted past the pin and a consumer installing these packages sees NU1608 on every target
-    framework. The warning is harmless on a site already running a current CMS, since the site's own
-    reference lifts AspNetCore to match, but the fix belongs in DotNetCounters: lower its minimums to
-    the oldest CMS it actually supports, then lower these with it.
+    Compiling against the floor is what makes the floor real, which is why these are the versions the
+    projects build against and not just the numbers in the .nuspec. Optimizely gives every release a
+    new AssemblyVersion - CMS 12.10.0 ships 12.10.0.0, 12.24.1 ships 12.24.1.0 - so the direction
+    matters: an assembly compiled against the floor binds against everything above it, on .NET Core
+    because the runtime resolves the higher version it finds, and on net472 through the binding
+    redirects a CMS 11 site already has to carry for Optimizely's own assemblies. Compiling against
+    the newest and declaring that as the minimum, which is what this used to do, gets the same
+    protection only by refusing to install at all.
+
+    Building at the floor does mean the default test run no longer exercises current Optimizely, so
+    it is run at both ends. See "Testing at the ceiling" in docs/SMOKE_TEST.md.
+
+    The trade is that no Optimizely API introduced after a floor is available to us. Nothing here
+    needs one - the instrumented surface is IContentLoader, IContentRepository,
+    ISynchronizedObjectInstanceCache, IOrderRepository and IEventPublisher, all long-standing - but
+    reaching for something newer means raising the floor with it, deliberately.
+
+    One warning survives all this and is expected. EPiServer.CMS.AspNetCore pins its sibling
+    EPiServer.CMS.Core to its own exact version, while Commerce asks for both as a range and so
+    settles AspNetCore on the range floor; the CMS minimum DotNetCounters imposes then lifts CMS.Core
+    past that pin, which is NU1608. It shows up on a project that references nothing but these
+    packages and not on a real site, where the site's own CMS.AspNetCore reference lifts it to match.
+    Closing it means lowering the minimums in DotNetCounters - or raising the Commerce floor to a
+    release whose own CMS floor already clears 12.10.0, which trades reach for a quiet log and is not
+    the trade this file is making.
   -->
   <PropertyGroup>
-    <!-- V11: CMS 11 / Commerce 13, net472 -->
-    <OptimizelyV11Version>11.21.5</OptimizelyV11Version>
-    <CommerceV13Version>13.37.2</CommerceV13Version>
+    <!-- V11: CMS 11 / Commerce 13, net472.
+         CMS 11 held up by Commerce 13.0.0, which asks for EPiServer.Framework [11.11.1, 12.0.0).
+         Nothing of ours needs it: the CMS package alone still builds against 11.1.0. One number
+         rather than two is the only reason the CMS package does not go lower.
+         Commerce 13 is at the bottom of its major, and unusually free of consequence - every
+         13.x ships the same frozen AssemblyVersion 3.0.30930.28736, so no binding redirect is
+         involved anywhere in the range. -->
+    <OptimizelyV11Version>11.11.1</OptimizelyV11Version>
+    <CommerceV13Version>13.0.0</CommerceV13Version>
 
     <!-- V12: CMS 12 / Commerce 14, net6.0-net9.0.
-         Commerce 14.46 dropped net6.0 and net7.0, so those two targets stay on 14.45.5, the last
-         release that still ships a net6.0 assembly. Not the far older 14.0.3: the CMS floor that one
-         names, EPiServer.Framework 12.0.3, has a graph that cannot restore at all - it asks for
-         System.Security.Permissions [5.0.0, 6.0.0) while its own Microsoft.Data.SqlClient 3.0.0
-         chain requires >= 6.0.0, an NU1107 hard error rather than a warning. -->
-    <OptimizelyV12Version>12.24.1</OptimizelyV12Version>
-    <CommerceV14LegacyVersion>14.45.5</CommerceV14LegacyVersion>
-    <CommerceV14Version>14.46.0</CommerceV14Version>
+         12.10.0 is a hard floor and not our choice: Optimizely.Performance.DotNetCounters 1.0.0 -
+         the dependency these packages always ship beside - declares EPiServer.CMS.Core and
+         EPiServer.Framework >= 12.10.0 in its net6.0 group, which every consumer inherits through
+         Core. 12.5.0 restores as an NU1605 downgrade and 12.0.3 as an NU1107 conflict, but only
+         the first of those is ours to fix, by lowering the minimums in DotNetCounters.
+         Commerce 14.5.0 is the oldest that ships a net6.0 assembly at all, so it is the floor for
+         a band that starts at net6.0. It names CMS 12.4.0, below ours, so it constrains nothing.
+         One value covers net6.0 through net9.0. There used to be two, because Commerce 14.46
+         dropped net6.0 and net7.0 - an upper bound, which stops mattering once these are floors. -->
+    <OptimizelyV12Version>12.10.0</OptimizelyV12Version>
+    <CommerceV14Version>14.5.0</CommerceV14Version>
 
-    <!-- V13: CMS 13 / Commerce 15, net10.0 -->
-    <OptimizelyV13Version>13.1.1</OptimizelyV13Version>
-    <CommerceV15Version>15.1.0</CommerceV15Version>
+    <!-- V13: CMS 13 / Commerce 15, net10.0.
+         13.0.2 rather than 13.0.0, which is what DotNetCounters asks for and is the bottom of the
+         major. Commerce 15.0.0 requires CMS 13.0.2, and Optimizely's inner packages pin each other
+         exactly - EPiServer.Cms.Core 13.0.2 -> EPiServer 13.0.2 -> EPiServer.Events (= 13.0.2) - so
+         a CMS floor even one patch below the one Commerce names is an NU1107 conflict rather than a
+         downgrade warning. The two have to move together. -->
+    <OptimizelyV13Version>13.0.2</OptimizelyV13Version>
+    <CommerceV15Version>15.0.0</CommerceV15Version>
   </PropertyGroup>
 
 </Project>

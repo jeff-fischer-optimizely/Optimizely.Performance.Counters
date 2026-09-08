@@ -39,14 +39,11 @@
     <Reference Include="System.Configuration" />
   </ItemGroup>
 
-  <!-- .NET 6-7 (V12 / Commerce 14) - Commerce 14.46 dropped these two targets. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'net6.0' Or '$(TargetFramework)' == 'net7.0'">
-    <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV14LegacyVersion)" PrivateAssets="compile" />
-    <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" PrivateAssets="compile" />
-  </ItemGroup>
-
-  <!-- .NET 8-9 (V12 / Commerce 14) -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
+  <!-- .NET 6-9 (V12 / Commerce 14). One Commerce version across the band. It used to be split,
+       because Commerce 14.46 has no net6.0 or net7.0 assembly - but that is a ceiling, and these
+       are floors: 14.5.0 is the oldest Commerce 14 with a net6.0 assembly and it is equally valid
+       on net8.0 and net9.0. A site on net8.0 running 14.46 installs against this floor fine. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net6.0' Or '$(TargetFramework)' == 'net7.0' Or '$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="EPiServer.Commerce.Core" Version="$(CommerceV14Version)" PrivateAssets="compile" />
     <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" PrivateAssets="compile" />
   </ItemGroup>
