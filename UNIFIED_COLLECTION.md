@@ -1,5 +1,20 @@
 # Unified EventCounter Collection Architecture
 
+> **Rejected. Kept as a record of the alternative, not as a description of the product.**
+>
+> Nothing below was built, and nothing below should be built. The user considered an in-process
+> collector for this package's own counters twice and rejected it both times, along with the
+> republishing of `Optimizely.Performance.DotNetCounters`' counters that it depends on. The
+> shipped design is the opposite one: publish to the `Optimizely-Performance` EventSource and
+> leave collection to whatever the host already runs. See [README.md](README.md) for what the
+> product actually does, and [TELEMETRY_ARCHITECTURE.md](TELEMETRY_ARCHITECTURE.md) for why.
+>
+> This does **not** mean the product contains no `EventListener`. It contains one —
+> `ContentionProbe.ContentionBurstListener`, which listens on the *runtime's* contention keyword
+> to gather source data during a capture burst. The line is what a listener is pointed at:
+> someone else's EventSource as a data source, yes; our own counters, no. See
+> [CORRECT_INTEGRATION.md](CORRECT_INTEGRATION.md).
+
 ## Problem Statement
 
 **Before**: Two separate collection systems:

@@ -2,7 +2,15 @@
 
 ## The Right Way
 
-Application Insights **already has an EventListener** (`EventCounterCollectionModule`) that collects EventCounters. We don't need to create our own EventListener.
+Application Insights **already has an EventListener** (`EventCounterCollectionModule`) that collects EventCounters. We don't need to create our own EventListener to collect *our own* counters.
+
+> Read "our own" strictly. The rule is about what a listener is **pointed at**, not about the
+> existence of an `EventListener` in the product. Collecting the counters this package publishes
+> is the host's job and we do not do it. Listening to *someone else's* EventSource to gather
+> source data is a different thing and is allowed:
+> [`ContentionProbe.ContentionBurstListener`](src/Optimizely.Performance.Counters.Core/Diagnostics/ContentionProbe.cs)
+> subscribes to the runtime's contention keyword during a short capture burst, which is the only
+> way to get wait *durations* rather than a contention count. It is deliberate and must stay.
 
 We just need to **register our EventCounters** with Application Insights so it knows to collect them.
 
@@ -146,7 +154,7 @@ private void DetectTelemetrySystems(ServiceConfigurationContext context)
 
 ## What We DON'T Do
 
-❌ **Create our own EventListener** - Application Insights already has one  
+❌ **Collect our own counters with an EventListener** - Application Insights already has one. Listening to the runtime's own EventSources for source data is a separate thing and is allowed; see the note at the top.  
 ❌ **Collect metrics ourselves** - Application Insights does this  
 ❌ **Store metrics in a dictionary** - Not needed  
 ❌ **Call DotNetCounters.Initialize()** - Not related to our counters  
@@ -222,7 +230,7 @@ customMetrics
 
 ## Summary
 
-✅ **No custom EventListener** - use Application Insights' built-in one  
+✅ **No custom collector for our own counters** - use Application Insights' built-in one  
 ✅ **Register counters** via `ConfigureTelemetryModule<EventCounterCollectionModule>`  
 ✅ **Uses reflection** to avoid hard dependency  
 ✅ **Same pattern** that DotNetCounters should use  
