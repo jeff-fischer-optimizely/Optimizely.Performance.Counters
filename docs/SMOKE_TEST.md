@@ -1,9 +1,11 @@
 # Smoke test
 
-Confirming, on a real site, that the packages install, that the initialization module fires, and
-that counters reach `dotnet-counters` and Application Insights Live Metrics.
+Confirming, on a real site, that the packages install, that the initialization module fires, that
+counters reach `dotnet-counters` and Application Insights Live Metrics, and that a counter can be
+followed back to the requests it affected.
 
-Stage 1 needs nothing. Stages 2 to 6 need a licensed Optimizely site.
+Stage 1 needs nothing. Stages 2 to 7 need a licensed Optimizely site, and Stage 7 additionally needs
+Application Insights to have been collecting for long enough to have a spike worth querying.
 
 ---
 
@@ -297,6 +299,66 @@ On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
 
 ---
 
+## Stage 7 - from a counter back to the requests (V12 / V13)
+
+The stages above end at *the counter arrived*. This one ends at *the counter was useful*, which is
+a different claim and the one an operator actually needs. It is worth running once on a site you
+are about to rely on, because everything it depends on can be individually true and still not line
+up.
+
+The queries live in the **Correlating a counter with the requests it affected** section of
+[README.md](../README.md#correlating-a-counter-with-the-requests-it-affected) rather than here, so
+there is one copy to keep right. This stage checks the preconditions they need.
+
+1. **Confirm the counters carry an instance.** The join is on time *and* `cloud_RoleInstance`,
+   because on a multi-instance site a spike is usually one instance and averaging it across the
+   others buries it.
+
+   ```kusto
+   customMetrics
+   | where name startswith "Optimizely."
+   | summarize instances = dcount(cloud_RoleInstance), any(cloud_RoleInstance)
+   ```
+
+   An empty or single literal instance name on a site you know is scaled out means the join will
+   silently over-match, pulling in requests other instances served.
+
+2. **Confirm requests and counters agree about the clock.** Pick a minute with traffic and check
+   both tables report it:
+
+   ```kusto
+   union
+       (customMetrics | where name startswith "Optimizely." | extend t = "counter"),
+       (requests | extend t = "request")
+   | summarize count() by t, cloud_RoleInstance, bin(timestamp, 1m)
+   | order by timestamp desc
+   ```
+
+   Counter buckets and request buckets should interleave. Counters arriving in bursts every few
+   minutes rather than every minute means the collection interval was changed, and a one-minute
+   join window is then too narrow.
+
+3. **Turn adaptive sampling off before drawing conclusions.** Sampled-away requests do not make the
+   correlation wrong, they make it *understated* - the spike window looks quieter than it was, which
+   is the direction that talks you out of a real finding.
+
+4. **Run the two-step query from the README** against a window you have already provoked - the
+   thread pool or cache lock exercises in Stage 3 will do. An operation whose p95 moves only inside
+   the spike windows is the result you are looking for.
+
+5. **Run it against the logging counters too**, which are the one family where the loop closes
+   properly. Counters carry no `operation_Id`, but the `traces` they are counting do, so the join
+   there names operations rather than inferring them from a time window. If that query returns rows
+   and the time-window one does not, the correlation machinery is fine and the spike simply had no
+   requests in it - which is itself an answer, and usually means a scheduled job.
+
+**What this stage cannot establish.** Causation. A counter is a process-level aggregate collected on
+its own timer, outside any request and outside any activity scope, so there is nothing to join on
+but time and instance. Read a result as a strong candidate, and confirm it by comparing against
+quiet windows on the same instance.
+
+---
+
 ## Known gaps
 
 - **Application Insights on V11, for this package's own counters.** `TelemetryStartup.Configure`
@@ -311,10 +373,13 @@ On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
   still resolves, so detection reports Application Insights as present. Collecting EventCounters
   under 3.x means OpenTelemetry's own EventCounters instrumentation, which is a feature rather than
   a version bump.
-- **No configuration system.** Counters cannot be turned off individually, or at all, yet, and
-  neither the probes nor the cascade instrumentation can be reconfigured by a site operator. The
-  options classes exist with sensible defaults; nothing binds them to `appsettings.json` or
-  `web.config`.
+- **Counters cannot be turned off one at a time.** Everything under `Optimizely:Instrumentation`
+  is configurable - the settings template the package installs lists every key at its default -
+  but the switches are per feature, not per counter: a probe, the
+  cascade instrumentation or the log write rate goes off as a unit, and the master switch takes the
+  whole package off. Turning off a single counter would mean a registry a site could edit, and a
+  chart that is empty because somebody deprovisioned it looks exactly like one that is empty because
+  it is broken.
 - **Three of the four probes are V12/V13 only.** GC pause and contention need runtime APIs that
   .NET Framework does not have, and the cache lock probe has nothing to find on V11.
   `Optimizely.Runtime.GC.IntervalPauseMs` additionally needs .NET 8 or later.

@@ -174,6 +174,53 @@ indistinguishable from a completely idle pool. This package reads the same switc
 collects them only when they can be believed, so nothing on the chart is a number you cannot trust.
 There is no equivalent switch on V12 or V13; the EventCounter versions are always available.
 
+### Settings
+
+Nothing has to be configured. Every value has a default and the defaults are what the package uses
+as installed, so the rest of this section is only needed when you want to change something.
+
+Settings live under `Optimizely:Instrumentation`, using the same key paths on all three majors —
+`appSettings` in `web.config` on V11, `appsettings.json` on V12 and V13 — so what a site configures
+survives an upgrade. A template listing every key at its default is packed with the package and
+written to `App_Data\Optimizely.Performance.Counters\` on install; copy across the lines you are
+changing and leave the rest out.
+
+```json
+{
+  "Optimizely": {
+    "Instrumentation": {
+      "Enabled": true,
+      "Probes": {
+        "ThreadPool":        { "Enabled": true, "SampleIntervalSeconds": 5 },
+        "GarbageCollection": { "Enabled": true, "SlowPauseThresholdMilliseconds": 200 },
+        "Contention":        { "Enabled": true, "BurstCaptureEnabled": true },
+        "CacheLock":         { "Enabled": true, "QueueDepthThreshold": 10 }
+      },
+      "Cache":   { "Cascade": { "Enabled": true, "LargeRemovalThreshold": 1000 } },
+      "Logging": { "Enabled": true }
+    }
+  }
+}
+```
+
+Three things worth knowing before you need them.
+
+**The master switch is there for an incident.** `Optimizely:Instrumentation:Enabled` set to `false`
+decorates nothing, starts no probe and registers no counter — each module logs one line and returns.
+Ruling this package out as the cause of something should be a setting, not a deployment.
+
+**The switches are per feature, not per counter.** A probe, the cascade instrumentation or the log
+write rate goes off as a unit. That is deliberate: a chart that is empty because somebody
+deprovisioned one counter looks exactly like a chart that is empty because the counter is broken.
+
+**A misspelled key is not silently ignored.** Anything unrecognised under `Optimizely:Instrumentation`
+is listed in the startup log, because a typo and a correctly configured counter on a healthy site are
+otherwise indistinguishable from the outside.
+
+The binding is done by hand rather than through `Microsoft.Extensions.Configuration.Binder`. The
+binder cannot be used on net472 — a V11 site has no `IConfiguration` to bind from — and it ignores
+unrecognised keys, which is the one behaviour a settings file most needs to be told about.
+
 ---
 
 ## What is instrumented
@@ -784,11 +831,9 @@ does not exist:
 
 - **Application Insights auto-registration on V11**, for this package's own counters. Described
   above. The SQL connection pool counters do register there.
-- **No configuration.** Counters cannot be disabled individually or collectively, and neither the
-  probes nor the cascade instrumentation can be switched off by a site operator — the options
-  classes exist and carry sensible defaults, but nothing binds them to `appsettings.json` or
-  `web.config`. A host that needs different values has to construct the options and start the
-  probes itself. This is the largest gap on the list.
+- **Counters cannot be disabled one at a time.** The settings described above switch features —
+  a probe, the cascade instrumentation, the log write rate, or the whole package — rather than
+  individual counters.
 - **Three of the four probes are V12/V13 only.** GC pause and contention need .NET 6 or later;
   `IntervalPauseMs` needs .NET 8. The cache lock probe has nothing to find on V11.
 - **Commerce is `IOrderRepository` only.** Pricing, inventory, promotions and payments are not
