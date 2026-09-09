@@ -70,6 +70,61 @@
       shared framework and must not reference the package, which is why this is not global.
     -->
     <PackageReference Include="System.Reflection.DispatchProxy" Version="4.7.1" />
+    <!-- HttpCacheabilityModule: the V11 half of the outbound response cacheability counters is an
+         IHttpModule, so this target framework - and only this one - compiles against System.Web. -->
+    <Reference Include="System.Web" />
+    <!--
+      DynamicModuleUtility, which is how that module gets into the pipeline without the site adding
+      a line to web.config. There is no other supported way to register a module programmatically,
+      and requiring a web.config edit would make this the only part of the package that is not
+      installed by installing the package.
+
+      1.0.0 rather than 2.0.0 because it is the version already in the graph on a V11 site - ASP.NET
+      MVC 5 and WebPages both depend on it - so on the sites this target framework exists for, this
+      reference resolves to an assembly that was going to be in bin anyway.
+    -->
+    <PackageReference Include="Microsoft.Web.Infrastructure" Version="1.0.0" />
+  </ItemGroup>
+
+  <!--
+    The V12 and V13 half of the same feature is ASP.NET Core middleware and an IStartupFilter, so
+    those target frameworks need the request pipeline abstractions.
+
+    Packages rather than <FrameworkReference Include="Microsoft.AspNetCore.App" />, which is the
+    modern spelling and is wrong here. A framework reference makes NuGet prune every package the
+    shared framework already contains - which includes all three Microsoft.Extensions.* references
+    above - out of the dependency graph and out of the produced nuspec. Core would still compile,
+    but its package would declare no dependency on Microsoft.Extensions.Logging.Abstractions, so any
+    consumer without the ASP.NET Core shared framework would get an assembly whose references
+    nothing satisfies. The CMS and Commerce projects, which get those packages through Core, stopped
+    compiling outright.
+
+    These two are the last netstandard2.0 versions and are old on purpose: they are only needed for
+    their type shapes. A real ASP.NET Core host has the same assemblies in its shared framework at a
+    far higher version, and NuGet's package-override mechanism drops these in favour of it - so on
+    the sites this exists for, nothing is downloaded and nothing is deployed. The pruning that is
+    wrong to trigger inside Core is exactly right when the consumer triggers it.
+
+    The version has to move with the target framework, like the Microsoft.Extensions line above and
+    for the opposite reason. On net10.0 both packages are already in the graph at 2.3.0 -
+    EPiServer.CMS.Core 13 reaches them through Microsoft.AspNetCore.StaticFiles - and naming them
+    lower is a downgrade, which this repository builds with as an error. On net6.0 through net9.0
+    nothing else in the graph asks for them, and 2.3.0 would be the one asking: its own dependencies
+    name Microsoft.Extensions.Hosting.Abstractions 8.0.1, which drags the whole Extensions line up to
+    8.0.2 and collides head-on with the 6.x range EPiServer 12 pins. 2.2.0 depends on the 2.2.0
+    Extensions packages, which are below every floor in the graph and change nothing.
+
+    net10.0 is unaffected by that pull because its Extensions line is already 10.0.2, well above the
+    8.0.1 the newer package asks for.
+  -->
+  <ItemGroup Condition="'$(TargetFramework)' != 'net472' And '$(TargetFramework)' != 'net10.0'">
+    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Hosting.Abstractions" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.3.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Hosting.Abstractions" Version="2.3.0" />
   </ItemGroup>
 
   <!--

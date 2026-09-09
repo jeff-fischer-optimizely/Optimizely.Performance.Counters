@@ -1,4 +1,5 @@
 using Optimizely.Performance.Counters.Core.Diagnostics;
+using Optimizely.Performance.Counters.Core.Http;
 
 namespace Optimizely.Performance.Counters.Core.Configuration
 {
@@ -47,6 +48,9 @@ namespace Optimizely.Performance.Counters.Core.Configuration
 
         /// <summary>Gets or sets the log write rate options.</summary>
         public LogWriteRateOptions Logging { get; set; } = new LogWriteRateOptions();
+
+        /// <summary>Gets or sets the outbound response cacheability options.</summary>
+        public HttpCacheabilityOptions Http { get; set; } = new HttpCacheabilityOptions();
     }
 
     /// <summary>

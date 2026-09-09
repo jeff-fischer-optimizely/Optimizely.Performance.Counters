@@ -122,6 +122,45 @@
           "provider is then not registered at all, so it costs the site nothing."
         ],
         "Enabled": true
+      },
+
+      "Http": {
+        "_comment": [
+          "Outbound response cacheability. Every response the site sends is classified from its",
+          "Cache-Control and Expires headers as the headers go out, and the nine",
+          "Optimizely.Runtime.Http.* counters report the mix once a minute: what share of responses",
+          "is shared-cacheable, browser-only, revalidating, no-store, or says nothing at all.",
+          "",
+          "The one thing here that is not a number is the shared-cache conflict: a response marked",
+          "public that also sets a cookie. No shared cache will store it, so the cache headers on",
+          "that route are buying nothing - and from the origin's side the traffic that results",
+          "looks like ordinary traffic.",
+          "",
+          "Not under Probes, for the same reason Logging is not: nothing goes looking. The counting",
+          "happens on the thread that is about to write the response, and costs a header read and",
+          "two or three interlocked increments.",
+          "",
+          "On CMS 12 and CMS 13 the measurement is middleware, registered first in the pipeline so",
+          "that it sees the finished header set; on CMS 11 it is an HTTP module that the package",
+          "adds to the pipeline itself, so there is nothing to put in web.config. Integrated mode",
+          "only - classic mode has no managed response header collection to read."
+        ],
+        "Enabled": true,
+
+        "_comment_LogSharedCacheConflicts": [
+          "A counter cannot carry a route, so a conflicting response is also written to the log,",
+          "naming the path that produced it. That is the only way to find the code responsible.",
+          "The path is logged without its query string, deliberately. False keeps the counter and",
+          "stops the log line, which is what a site that knows about the conflict wants."
+        ],
+        "LogSharedCacheConflicts": true,
+        "_comment_SharedCacheConflictLogsPerMinute": [
+          "One misconfigured route serving steadily would otherwise write the same sentence on",
+          "every request. Zero silences the log as completely as the switch above."
+        ],
+        "SharedCacheConflictLogsPerMinute": 5,
+        "_comment_FailureThreshold": "Consecutive failures after which the recorder switches itself off for the process.",
+        "FailureThreshold": 20
       }
     }
   }

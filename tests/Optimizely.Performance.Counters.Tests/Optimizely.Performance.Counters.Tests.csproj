@@ -114,6 +114,30 @@
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.23.0" />
   </ItemGroup>
 
+  <!--
+    DefaultHttpContext, for the response cacheability middleware tests. Core compiles against the
+    abstractions only - it never constructs a context, it is handed one - but a test has to build the
+    thing the middleware reads, and the only honest way to check that it reads Cache-Control off a
+    real header collection is to give it one.
+
+    Not <FrameworkReference Include="Microsoft.AspNetCore.App" />, which is what a test project would
+    normally use, for a smaller version of the reason Core avoids it: the framework reference prunes
+    every shared-framework package out of the graph, and the EPiServer packages here are pinned
+    against particular Microsoft.Extensions versions that the pruning would silently replace. The
+    tests would still run; they would just be running against different assemblies than the ones the
+    version matrix says they are.
+
+    Versions track Core's Http.Abstractions reference exactly - 2.2.2 pairs with 2.2.0, 2.3.0 with
+    2.3.0 - so this adds an implementation assembly and moves nothing else.
+  -->
+  <ItemGroup Condition="'$(TargetFramework)' != 'net472' And '$(TargetFramework)' != 'net10.0'">
+    <PackageReference Include="Microsoft.AspNetCore.Http" Version="2.2.2" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Microsoft.AspNetCore.Http" Version="2.3.0" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
     <PackageReference Include="Microsoft.ApplicationInsights.PerfCounterCollector" Version="2.23.0" />
   </ItemGroup>

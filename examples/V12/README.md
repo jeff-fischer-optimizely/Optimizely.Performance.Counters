@@ -43,7 +43,7 @@ time to count it would make the measurement the expensive part.
 
 If the site already references `Microsoft.ApplicationInsights.AspNetCore` (or
 `Microsoft.ApplicationInsights.WorkerService`), the module detects it during container configuration
-and subscribes all 62 counters to `EventCounterCollectionModule` itself, along with the twelve
+and subscribes all 75 counters to `EventCounterCollectionModule` itself, along with the twelve
 `Microsoft.Data.SqlClient` connection pool counters. You do not call `ConfigureTelemetryModule`.
 
 [appsettings.json](appsettings.json) is the connection string side of that. Confirm it took effect

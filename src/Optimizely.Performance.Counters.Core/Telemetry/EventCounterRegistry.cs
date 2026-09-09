@@ -52,6 +52,13 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             names.Add(CmsCache.InvalidationsPerSecond);
             names.Add(CmsCache.Operations);
 
+            // The same invalidations again, split by the call that asked for them. Registered on
+            // every version: all three routes exist on ISynchronizedObjectInstanceCache as far back
+            // as CMS 11, so unlike the cascade counters below these are populated everywhere.
+            names.Add(CmsCache.SynchronizedInvalidationsPerSecond);
+            names.Add(CmsCache.LocalOnlyInvalidationsPerSecond);
+            names.Add(CmsCache.RemoteInvalidationsPerSecond);
+
             // CMS - Cache dependency cascade, from InstrumentedSynchronizedObjectInstanceCache and
             // InstrumentedMemoryCache. V12 and V13 only: the measurement counts entries as they
             // reach IMemoryCache.Remove, and CMS 11 caches through System.Web instead, so there is
@@ -133,6 +140,23 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             names.Add(Runtime.Logging.WritesPerSecond);
             names.Add(Runtime.Logging.WarningsPerSecond);
             names.Add(Runtime.Logging.ErrorsPerSecond);
+
+            // Runtime - outbound response cacheability, from HttpCacheabilityRecorder. Fed by
+            // middleware on V12 and V13 and by an HTTP module on V11, so like the logging counters
+            // above these are populated on every version.
+            names.Add(Runtime.Http.ResponsesPerSecond);
+            names.Add(Runtime.Http.PublicPercent);
+            names.Add(Runtime.Http.PrivatePercent);
+            names.Add(Runtime.Http.RevalidatePercent);
+            names.Add(Runtime.Http.NoStorePercent);
+            names.Add(Runtime.Http.NoDirectivePercent);
+            names.Add(Runtime.Http.FreshnessSeconds);
+            names.Add(Runtime.Http.ValidatorPercent);
+            names.Add(Runtime.Http.SharedCacheConflictPercent);
+
+            // Runtime - the process, from ProcessUptimeReporter. Started alongside the probes on
+            // every version, and the one counter here that needs nothing from the host to work.
+            names.Add(Runtime.Process.UptimeSeconds);
 
             return names;
         }

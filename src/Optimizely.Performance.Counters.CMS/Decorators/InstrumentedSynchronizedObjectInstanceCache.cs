@@ -10,7 +10,8 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
 {
     /// <summary>
     /// Decorator for ISynchronizedObjectInstanceCache that instruments cache operations.
-    /// Tracks: hit rate, miss rate, invalidation rate, total operations.
+    /// Tracks: hit rate, miss rate, invalidation rate, total operations, and the invalidation
+    /// rate again split by the call that asked for it - synchronized, local-only and remote.
     /// <para>
     /// Cache reads are far too frequent to emit a counter per call, so hits and misses are
     /// accumulated in interlocked counters and flushed on a timer. That keeps the per-call cost
@@ -44,6 +45,12 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
         private long _cacheHits;
         private long _cacheMisses;
         private long _invalidations;
+
+        // The same invalidations again, split by which call asked for them. Counted separately
+        // rather than derived, because Clear() is in the total and belongs to none of the three.
+        private long _synchronizedInvalidations;
+        private long _localOnlyInvalidations;
+        private long _remoteInvalidations;
 
         /// <summary>
         /// Wraps the cache resolved by the container and starts the metric flush timer.
@@ -125,10 +132,18 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
         }
 
         /// <inheritdoc />
+        /// <remarks>
+        /// Counted as <see cref="CacheRemovalPath.Local"/> for cascade purposes even though it
+        /// broadcasts, and <see cref="RemoveLocal"/> is counted the same way. The cascade
+        /// measurement answers "how much did this node discard", and the answer does not depend on
+        /// whether the other nodes were told; the rate counters below are where the two are told
+        /// apart.
+        /// </remarks>
         public void Remove(string key)
         {
             Measure(CacheRemovalPath.Local, key, () => _inner.Remove(key));
             Interlocked.Increment(ref _invalidations);
+            Interlocked.Increment(ref _synchronizedInvalidations);
         }
 
 #if CMS13
@@ -142,6 +157,11 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
             _inner.Clear();
             // A clear is a bulk invalidation. Counting it as one keeps the rate honest about
             // how often invalidation happens, which is what the counter is for.
+            //
+            // The total only, and deliberately: it is not a removal by any of the three routes,
+            // so attributing it to one of them would put a number under a name that means
+            // something else. It is also the reason the three routes do not have to sum to the
+            // total, which the counter documentation says out loud.
             Interlocked.Increment(ref _invalidations);
         }
 #endif
@@ -163,10 +183,18 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
         public IObjectInstanceCache ObjectInstanceCache => _inner.ObjectInstanceCache;
 
         /// <inheritdoc />
+        /// <remarks>
+        /// The one cache call that is worth counting on its own. It discards the entry here and
+        /// leaves it in place on every other node, so on a load-balanced site each of these is a
+        /// window of inconsistency that nothing reports - see
+        /// <see cref="CounterNames.CmsCache.LocalOnlyInvalidationsPerSecond"/> for why that is
+        /// worth a counter.
+        /// </remarks>
         public void RemoveLocal(string key)
         {
             Measure(CacheRemovalPath.Local, key, () => _inner.RemoveLocal(key));
             Interlocked.Increment(ref _invalidations);
+            Interlocked.Increment(ref _localOnlyInvalidations);
         }
 
         /// <inheritdoc />
@@ -174,6 +202,7 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
         {
             Measure(CacheRemovalPath.Remote, key, () => _inner.RemoveRemote(key));
             Interlocked.Increment(ref _invalidations);
+            Interlocked.Increment(ref _remoteInvalidations);
         }
 
         #endregion
@@ -236,6 +265,9 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
                 var hits = Interlocked.Exchange(ref _cacheHits, 0);
                 var misses = Interlocked.Exchange(ref _cacheMisses, 0);
                 var invalidations = Interlocked.Exchange(ref _invalidations, 0);
+                var synchronized = Interlocked.Exchange(ref _synchronizedInvalidations, 0);
+                var localOnly = Interlocked.Exchange(ref _localOnlyInvalidations, 0);
+                var remote = Interlocked.Exchange(ref _remoteInvalidations, 0);
 
                 var total = hits + misses;
                 var hitRate = total > 0 ? (double)hits / total * 100.0 : 0.0;
@@ -250,9 +282,22 @@ namespace Optimizely.Performance.Counters.CMS.Decorators
                 _metricTracker.TrackMetric(Names.InvalidationsPerSecond, invalidationsPerSecond);
                 _metricTracker.TrackMetric(Names.Operations, total);
 
+                // Published even at zero, and the local-only rate especially. A flat zero there is
+                // the reading that says this site does not have the problem, and it can only say
+                // that if the series is present; a gap would be indistinguishable from the
+                // decorator not being installed.
+                _metricTracker.TrackMetric(
+                    Names.SynchronizedInvalidationsPerSecond, synchronized / ReportingIntervalSeconds);
+                _metricTracker.TrackMetric(
+                    Names.LocalOnlyInvalidationsPerSecond, localOnly / ReportingIntervalSeconds);
+                _metricTracker.TrackMetric(
+                    Names.RemoteInvalidationsPerSecond, remote / ReportingIntervalSeconds);
+
                 _logger.LogDebug(
-                    "Cache metrics - Hits: {Hits}, Misses: {Misses}, Hit Rate: {HitRate:F2}%, Invalidations/sec: {InvalidationsPerSec:F2}",
-                    hits, misses, hitRate, invalidationsPerSecond);
+                    "Cache metrics - Hits: {Hits}, Misses: {Misses}, Hit Rate: {HitRate:F2}%, " +
+                    "Invalidations/sec: {InvalidationsPerSec:F2} " +
+                    "(synchronized {Synchronized}, local-only {LocalOnly}, remote {Remote})",
+                    hits, misses, hitRate, invalidationsPerSecond, synchronized, localOnly, remote);
             }
             catch (Exception ex)
             {

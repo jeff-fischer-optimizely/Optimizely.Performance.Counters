@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Optimizely.Performance.Counters.Core.Diagnostics;
+using Optimizely.Performance.Counters.Core.Http;
 using Optimizely.Performance.Counters.Core.Telemetry;
 
 namespace Optimizely.Performance.Counters.Tests.Infrastructure
@@ -41,6 +42,8 @@ namespace Optimizely.Performance.Counters.Tests.Infrastructure
                 DecoratorSweep.DriveEverything(tracker);
                 ProbeSweep.DriveEverything(tracker);
                 DriveLogWriteRate(tracker);
+                DriveHttpCacheability(tracker);
+                DriveProcessUptime(tracker);
             }
         }
 
@@ -61,5 +64,47 @@ namespace Optimizely.Performance.Counters.Tests.Infrastructure
 
             MetricFlush.Run(recorder);
         }
+
+        /// <remarks>
+        /// Neither a decorator nor a probe either, and driven the same way as the log write rate:
+        /// by handing the recorder what its sinks would hand it. One response of each kind, because
+        /// the five shares are only published when the interval had traffic behind it and a sweep
+        /// that recorded nothing would leave six of the nine counters unemitted - which is exactly
+        /// what the coverage test is looking for.
+        /// </remarks>
+        private static void DriveHttpCacheability(IMetricTracker tracker)
+        {
+            using var recorder = new HttpCacheabilityRecorder(tracker);
+
+            // Shared-cacheable and sets a cookie, so this one response covers the freshness counter
+            // and the conflict share as well as its own bucket.
+            Record(recorder, "public, max-age=600", hasValidator: true, hasSetCookie: true);
+            Record(recorder, "private, max-age=60");
+            Record(recorder, "no-cache");
+            Record(recorder, "no-store");
+            Record(recorder, cacheControl: null);
+
+            MetricFlush.Run(recorder);
+        }
+
+        /// <remarks>
+        /// The third of the reporters that is neither a decorator nor a probe, and the only one
+        /// that needs nothing handed to it: it reads a clock. Driving it is a flush and nothing
+        /// else.
+        /// </remarks>
+        private static void DriveProcessUptime(IMetricTracker tracker)
+        {
+            using var reporter = new ProcessUptimeReporter(tracker);
+
+            MetricFlush.Run(reporter);
+        }
+
+        private static void Record(
+            HttpCacheabilityRecorder recorder,
+            string? cacheControl,
+            bool hasValidator = false,
+            bool hasSetCookie = false) =>
+            recorder.Record(
+                ResponseCacheSummary.Describe(cacheControl, null, hasValidator, hasSetCookie));
     }
 }

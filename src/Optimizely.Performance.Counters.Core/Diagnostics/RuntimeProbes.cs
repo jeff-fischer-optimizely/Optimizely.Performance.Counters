@@ -28,6 +28,12 @@ namespace Optimizely.Performance.Counters.Core.Diagnostics
         private static readonly object Gate = new object();
         private static List<SamplingProbe>? _running;
 
+        // Not a probe, so it cannot go in the list, but it has the same lifetime and the same
+        // reason to be started once per process. Started and stopped here rather than given its
+        // own holder, because a second holder would be a second thing each module has to remember
+        // to call and the only thing it would hold is this.
+        private static ProcessUptimeReporter? _uptime;
+
         /// <summary>
         /// Whether the probes are currently running in this process.
         /// </summary>
@@ -99,6 +105,13 @@ namespace Optimizely.Performance.Counters.Core.Diagnostics
                     probe.Start();
                 }
 
+                // No switch of its own. It costs one subtraction a minute, it has no dependency
+                // that could fail, and the case for turning a probe off - it perturbs what it
+                // measures, or it reads something the host will not give up - does not arise for
+                // arithmetic on a timestamp. Optimizely:Instrumentation:Enabled still turns it off
+                // along with everything else.
+                _uptime = new ProcessUptimeReporter(metrics);
+
                 _running = probes;
                 return true;
             }
@@ -110,11 +123,23 @@ namespace Optimizely.Performance.Counters.Core.Diagnostics
         public static void Stop()
         {
             List<SamplingProbe>? probes;
+            ProcessUptimeReporter? uptime;
 
             lock (Gate)
             {
                 probes = _running;
+                uptime = _uptime;
                 _running = null;
+                _uptime = null;
+            }
+
+            try
+            {
+                uptime?.Dispose();
+            }
+            catch
+            {
+                // Shutdown is not a place to raise anything.
             }
 
             if (probes == null)

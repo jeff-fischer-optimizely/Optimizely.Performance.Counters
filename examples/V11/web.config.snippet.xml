@@ -6,6 +6,12 @@
   discovered automatically and runs correctly with none of it. This is the Application Insights
   wiring, plus one optional switch that changes what ADO.NET publishes.
 
+  In particular there is no <system.webServer><modules> entry to add. The package measures outbound
+  response cacheability with an IHttpModule, and it registers that module itself through
+  PreApplicationStartMethod - installing the package installs it. It needs an integrated-mode
+  application pool; in classic mode there is no managed response header collection to read and the
+  module subscribes to nothing.
+
   The package does read settings, from Optimizely:Instrumentation:* keys in appSettings, but every
   one of them has a default and none is needed to run. The complete set is written to
   App_Data\Optimizely.Performance.Counters\Optimizely.Instrumentation.template.config on install;
@@ -25,8 +31,9 @@
 
     <!--
       Switches the whole package off: nothing is decorated, no probe starts, no appender is added to
-      log4net, and the only trace left is one line in the log saying so. Here so that ruling this
-      package out during an incident is a setting rather than a deployment.
+      log4net, the response cacheability module goes inert, and the only trace left is one line in
+      the log saying so. Here so that ruling this package out during an incident is a setting rather
+      than a deployment.
     -->
     <!-- <add key="Optimizely:Instrumentation:Enabled" value="false" /> -->
   </appSettings>

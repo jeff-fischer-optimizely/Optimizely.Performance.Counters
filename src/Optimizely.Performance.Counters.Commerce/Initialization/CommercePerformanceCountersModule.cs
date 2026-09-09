@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Optimizely.Performance.Counters.Commerce.Decorators;
 using Optimizely.Performance.Counters.Core.Configuration;
 using Optimizely.Performance.Counters.Core.Diagnostics;
+using Optimizely.Performance.Counters.Core.Http;
 using Optimizely.Performance.Counters.Core.Telemetry;
 using Optimizely.Performance.Counters.Shared;
 using Optimizely.Performance.Counters.VersionDetection;
@@ -89,6 +90,16 @@ namespace Optimizely.Performance.Counters.Commerce.Initialization
                 // TryAddEnumerable makes this safe next to the CMS package doing the same.
                 RegisterLogWriteRateProvider(context);
             }
+
+            if (_options.Http.Enabled)
+            {
+                // Same shape again: the host reads its startup filters while building the request
+                // pipeline, so the middleware has to be registered before that and goes in inert.
+                // TryAddEnumerable inside the registration keeps this safe next to the CMS package
+                // doing the same, which matters more here than for the logging provider - two
+                // middlewares would classify every response twice.
+                RegisterHttpCacheability(context, _logger);
+            }
 #endif
 
             _logger?.LogInformation("Optimizely Commerce Performance Counters configured successfully");
@@ -119,6 +130,7 @@ namespace Optimizely.Performance.Counters.Commerce.Initialization
 
             StartRuntimeProbes(context, _options.Probes, _logger);
             StartLogWriteRate(context, _options.Logging, _logger);
+            StartHttpCacheability(context, _options.Http, _logger);
 
             _logger?.LogInformation("Optimizely Commerce Performance Counters initialized");
         }
@@ -132,6 +144,7 @@ namespace Optimizely.Performance.Counters.Commerce.Initialization
         {
             RuntimeProbes.Stop();
             LogWriteRateMonitor.Stop();
+            HttpCacheabilityMonitor.Stop();
 
             _logger?.LogInformation("Optimizely Commerce Performance Counters uninitialized");
         }

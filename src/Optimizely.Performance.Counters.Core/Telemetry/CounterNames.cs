@@ -78,8 +78,58 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             /// <summary>Percentage of reads that missed over the reporting window.</summary>
             public const string MissRate = Prefix + "MissRate";
 
-            /// <summary>Invalidations per second over the reporting window.</summary>
+            /// <summary>Invalidations per second over the reporting window, by every route.</summary>
+            /// <remarks>
+            /// The total, kept as it always was so that existing charts do not quietly change
+            /// meaning now that the routes below are published separately. It is not the sum of
+            /// those three on V11 and V12: the obsolete <c>Clear()</c> is a bulk invalidation with
+            /// no route of its own and is counted here only.
+            /// </remarks>
             public const string InvalidationsPerSecond = Prefix + "InvalidationsPerSecond";
+
+            /// <summary>
+            /// Invalidations per second that were broadcast to the rest of the cluster.
+            /// </summary>
+            /// <remarks>
+            /// <c>Remove</c>, the call almost all application code means to make. Interesting
+            /// mainly as the denominator for <see cref="LocalOnlyInvalidationsPerSecond"/>: the
+            /// two together say what share of this site's invalidations the other nodes never
+            /// heard about.
+            /// </remarks>
+            public const string SynchronizedInvalidationsPerSecond =
+                Prefix + "SynchronizedInvalidationsPerSecond";
+
+            /// <summary>
+            /// Invalidations per second that were deliberately not broadcast.
+            /// </summary>
+            /// <remarks>
+            /// <c>RemoveLocal</c>, and a bug signal on any site running more than one instance.
+            /// Every one of these drops an entry here and leaves the same entry stale on every
+            /// other node, until something else happens to evict it. There is a legitimate use -
+            /// discarding an entry the local node alone got wrong - and it is rare; the common
+            /// case is application code that reached for the wrong overload, or a
+            /// single-instance-era habit that survived the move to load balancing.
+            /// <para>
+            /// Nothing else in the platform reports this. It is invisible in development, where
+            /// there is only one node for the entry to be stale on, it logs nothing, and it
+            /// presents in production as content that is correct on one server and wrong on
+            /// another - the class of report that gets closed as unreproducible.
+            /// </para>
+            /// </remarks>
+            public const string LocalOnlyInvalidationsPerSecond =
+                Prefix + "LocalOnlyInvalidationsPerSecond";
+
+            /// <summary>
+            /// Invalidations per second arriving from another node in the cluster.
+            /// </summary>
+            /// <remarks>
+            /// <c>RemoveRemote</c>: work this instance was told to do rather than work it chose.
+            /// The rate-side companion to <see cref="RemoteRemovalFanOut"/>, and unlike that
+            /// counter it is available on V11 as well, where there is no memory cache underneath
+            /// to count cascaded entries at.
+            /// </remarks>
+            public const string RemoteInvalidationsPerSecond =
+                Prefix + "RemoteInvalidationsPerSecond";
 
             /// <summary>Total reads over the reporting window.</summary>
             public const string Operations = Prefix + "Operations";
@@ -361,6 +411,128 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
                 /// a climbing total with a flat error rate is cost without a cause.
                 /// </remarks>
                 public const string ErrorsPerSecond = Prefix + "ErrorsPerSecond";
+            }
+
+            /// <summary>
+            /// How cacheable the site's own responses are, read from the headers as they go out.
+            /// </summary>
+            /// <remarks>
+            /// Under <c>Runtime</c> for the same reason as <see cref="Logging"/>: the reading is
+            /// taken from the host's response pipeline, so it covers everything the process sends -
+            /// pages, the editorial UI, static files, API endpoints - and not only what came out of
+            /// Optimizely.
+            /// <para>
+            /// This is the one part of a site's performance that is decided entirely by the site
+            /// and measured entirely somewhere else. A response that says nothing about caching is
+            /// requested again, and the evidence lands in a CDN's dashboard, a browser's network
+            /// tab or nowhere at all - never in the site's own telemetry, which sees only that it
+            /// was asked. The counters here are the origin's side of that story: not how many
+            /// requests arrived, but how many of the responses it sent gave anyone a reason not to
+            /// ask twice.
+            /// </para>
+            /// </remarks>
+            public static class Http
+            {
+                private const string Prefix = "Optimizely.Runtime.Http.";
+
+                /// <summary>
+                /// Responses classified per second.
+                /// </summary>
+                /// <remarks>
+                /// The denominator for every share below, and the reading that tells a genuine
+                /// zero from a gap: the shares are only published for intervals that carried
+                /// traffic, so a flat zero here beside an empty share is a quiet site rather than a
+                /// broken counter.
+                /// </remarks>
+                public const string ResponsesPerSecond = Prefix + "ResponsesPerSecond";
+
+                /// <summary>
+                /// Percentage of responses any cache may store and reuse, shared ones included.
+                /// </summary>
+                /// <remarks>
+                /// The number a CDN sits on top of. Everything else being equal this is the ceiling
+                /// on how much traffic can be kept away from the origin, and on most Optimizely
+                /// sites it is far lower than whoever bought the CDN believes.
+                /// </remarks>
+                public const string PublicPercent = Prefix + "PublicPercent";
+
+                /// <summary>Percentage reusable by the one browser that asked, and nothing else.</summary>
+                public const string PrivatePercent = Prefix + "PrivatePercent";
+
+                /// <summary>
+                /// Percentage that may be stored but not reused without asking first.
+                /// </summary>
+                /// <remarks>
+                /// A request reaches the site for every one of these. Read it with
+                /// <see cref="ValidatorPercent"/>, which decides whether that request costs a 304
+                /// or the whole body again.
+                /// </remarks>
+                public const string RevalidatePercent = Prefix + "RevalidatePercent";
+
+                /// <summary>Percentage no cache may store at all.</summary>
+                public const string NoStorePercent = Prefix + "NoStorePercent";
+
+                /// <summary>
+                /// Percentage that said nothing about caching at all.
+                /// </summary>
+                /// <remarks>
+                /// Usually the largest share, and the one worth moving. These are not uncacheable -
+                /// they are unspecified, left to whatever heuristic each client applies, which
+                /// means the site cannot say how long its own output is being reused for or
+                /// whether it is being reused at all.
+                /// </remarks>
+                public const string NoDirectivePercent = Prefix + "NoDirectivePercent";
+
+                /// <summary>
+                /// Stated freshness lifetime, in seconds, of a response that has one.
+                /// </summary>
+                /// <remarks>
+                /// Only recorded for the reusable responses. A revalidating response is fresh for
+                /// zero seconds by definition, and folding those zeros in would drag the mean
+                /// towards a number no response ever stated. Read the counter's own aggregates:
+                /// count is how many responses committed to a lifetime, mean is how long for.
+                /// </remarks>
+                public const string FreshnessSeconds = Prefix + "FreshnessSeconds";
+
+                /// <summary>Percentage carrying an <c>ETag</c> or a <c>Last-Modified</c>.</summary>
+                public const string ValidatorPercent = Prefix + "ValidatorPercent";
+
+                /// <summary>
+                /// Percentage claiming to be shared-cacheable while also setting a cookie.
+                /// </summary>
+                /// <remarks>
+                /// Wasted headers, and the most common way a site undoes its own caching. A shared
+                /// cache will not store a response carrying a <c>Set-Cookie</c> - doing so would
+                /// hand a second visitor the first visitor's session - so the CDN declines it and
+                /// the origin keeps serving it. Nothing errors and no header is wrong on its own,
+                /// which is why this needs a counter to be visible at all.
+                /// </remarks>
+                public const string SharedCacheConflictPercent = Prefix + "SharedCacheConflictPercent";
+            }
+
+            /// <summary>The process itself, from the uptime reporter.</summary>
+            public static class Process
+            {
+                private const string Prefix = "Optimizely.Runtime.Process.";
+
+                /// <summary>Seconds since the worker process started.</summary>
+                /// <remarks>
+                /// The counter that makes the other counters readable. Almost everything else in
+                /// this package is a rate or an average over a warm process, and every one of them
+                /// lies for the first few minutes after a restart: the cache hit rate is low
+                /// because the cache is empty, the GC pause series is short because the heap is
+                /// small, and the thread pool is injecting threads. A hit rate that collapses at
+                /// the same moment this drops to zero is a restart, not a cache problem, and
+                /// telling those two apart currently means leaving the chart and going to look at
+                /// the platform's own logs.
+                /// <para>
+                /// A sawtooth here is the finding in its own right. Unexplained recycles are
+                /// common on Optimizely sites - memory limits, idle timeouts, an overlapped
+                /// deployment, a crash the host restarted quietly - and the interval between the
+                /// teeth is the thing to take to whoever owns the hosting.
+                /// </para>
+                /// </remarks>
+                public const string UptimeSeconds = Prefix + "UptimeSeconds";
             }
         }
 

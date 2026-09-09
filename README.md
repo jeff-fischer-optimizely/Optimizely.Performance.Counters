@@ -58,6 +58,12 @@ actually stopped your threads, which nothing maintains.
 - **Follow it downstream.** Cache miss storm, connection pool exhaustion, thread pool starvation:
   the cache counters, the SqlClient pool counters and the thread pool queue *delay* share one
   timeline, so the causal chain is a single chart rather than three tabs and an assumption.
+- **See the load you told somebody else to send you.** Every other counter here measures work the
+  process did; the cacheability counters measure what share of responses the site gave a browser or
+  a CDN permission to reuse. When that permission is missing the request simply comes back looking
+  like ordinary traffic, so the origin sees load it has no reason to question — including the case
+  worth acting on immediately, a response marked `public` that also sets a cookie and which no
+  shared cache will therefore store at all.
 - **Prove an upgrade or a code change.** The same counter names are emitted on V11, V12 and V13, so
   a before-and-after comparison across a CMS migration is a Kusto query rather than an argument.
 - **Nothing to write.** Auto-registers through `IConfigurableModule`. No `Startup.cs` change, no
@@ -76,6 +82,7 @@ actually stopped your threads, which nothing maintains.
 | A Commerce checkout that degrades under load | Cart save and load timings separated from the rest of the request |
 | Planning or validating a V11 → V12 → V13 upgrade | The same metric names on both sides of the move |
 | A multi-server cluster with remote-event problems (V13) | Remote event rate, failure rate and delivery time |
+| Origin traffic higher than the CDN report suggests it should be | What share of responses is actually cacheable, and whether cookies are stopping the CDN storing them |
 
 And when you wouldn't: if you only need to know whether the *process* is healthy — GC, memory,
 threads — the DotNetCounters package alone covers that and this one adds nothing. If you have a
@@ -197,7 +204,8 @@ changing and leave the rest out.
         "CacheLock":         { "Enabled": true, "QueueDepthThreshold": 10 }
       },
       "Cache":   { "Cascade": { "Enabled": true, "LargeRemovalThreshold": 1000 } },
-      "Logging": { "Enabled": true }
+      "Logging": { "Enabled": true },
+      "Http":    { "Enabled": true, "LogSharedCacheConflicts": true }
     }
   }
 }
@@ -225,16 +233,16 @@ unrecognised keys, which is the one behaviour a settings file most needs to be t
 
 ## What is instrumented
 
-Sixty-two counters, from six decorated services, four probes and the host's logging pipeline. This
-is the whole list — the package instruments a finite, hand-maintained set of seams rather than
-crawling for things to wrap.
+Seventy-five counters, from six decorated services, four probes, the host's logging pipeline, the
+responses the site sends and the process itself. This is the whole list — the package instruments a
+finite, hand-maintained set of seams rather than crawling for things to wrap.
 
 ### From the decorators
 
 | Prefix | Counters |
 | --- | --- |
 | `Optimizely.CMS.Content.` | `LoadTimeMs`, `LoadOperations`, `SaveTimeMs`, `SaveOperations`, `PublishTimeMs`, `PublishOperations`, `DeleteTimeMs`, `DeleteOperations`, `MoveTimeMs`, `MoveOperations`, `ItemsLoaded` |
-| `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations` |
+| `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations`, `SynchronizedInvalidationsPerSecond`, `LocalOnlyInvalidationsPerSecond`, `RemoteInvalidationsPerSecond` |
 | `Optimizely.CMS.Cache.` *(cascade — V12/V13)* | `RemovalFanOut`, `RemoteRemovalFanOut`, `InsertFanOut`, `RemovalDurationMs`, `InsertTtlSeconds`, `EvictionsExpired`, `EvictionsCapacity`, `EvictionsReplaced`, `EvictionsTokenExpired` |
 | `Optimizely.CMS.Events.` | `EventsPerSecond`, `RemoteEventsPerSecond`, `RemoteEventFailuresPerSecond`, `AverageRemoteEventDeliveryTimeMs` *(V13 only)* |
 | `Optimizely.Commerce.Orders.` | `SaveTimeMs`, `SaveOperations`, `LoadTimeMs`, `LoadOperations`, `CreateTimeMs`, `CreateOperations`, `DeleteTimeMs`, `DeleteOperations`, `CartLineItemCount`, `CartTotal`, `CartsLoaded` |
@@ -251,6 +259,26 @@ the cluster caused, because profiling *this* instance will never explain those. 
 the least obvious of the three — inserting a key removes the existing entry first, so writing a key
 that others depend on evicts them too. The four `Evictions*` counters carry the reason as separate
 names rather than as a dimension, for the reason given at the end of this section.
+
+`LocalOnlyInvalidationsPerSecond` is the one to look at on a load-balanced site. Optimizely's cache
+has two removals that look identical from the call site: `Remove` broadcasts the invalidation to the
+rest of the cluster, and `RemoveLocal` deliberately does not. Every `RemoveLocal` on shared content
+therefore drops the entry here and leaves the same entry stale on every other node until something
+else happens to evict it. There is a legitimate use — discarding an entry only the local node got
+wrong — and it is rare; the common case is code that reached for the wrong overload, or a
+single-instance habit that survived the move behind a load balancer. Nothing reports it today: it is
+invisible in development, where there is no second node for the entry to be stale on, it logs
+nothing, and in production it presents as content that is right on one server and wrong on another,
+which is the class of report that gets closed as unreproducible. A flat zero here is a reading in
+its own right, which is why the counter is published even when nothing removed anything.
+
+The other two are the context that makes it legible. `SynchronizedInvalidationsPerSecond` is the
+`Remove` route, so the two together give the share of this node's invalidations the cluster never
+heard about, and `RemoteInvalidationsPerSecond` is work this node was *told* to do by another — the
+rate-side companion to `RemoteRemovalFanOut`, and unlike that counter it works on V11 too.
+`InvalidationsPerSecond` is unchanged and still the total, so existing charts mean what they always
+did. It is not the sum of the three on V11 and V12: the obsolete `Clear()` is a bulk invalidation
+with no route of its own and is counted in the total only.
 
 The decorated services:
 
@@ -334,6 +362,96 @@ The hook is the one place every write already passes through, which differs by m
 Counts accumulate on the writing thread with an interlocked increment and are published once a
 minute, the same accumulate-and-flush pattern the cache counters use, because a counter write per
 log write would make this the expensive thing on the page.
+
+### From the response pipeline
+
+| Prefix | Counters | Versions |
+| --- | --- | --- |
+| `Optimizely.Runtime.Http.` | `ResponsesPerSecond`, `PublicPercent`, `PrivatePercent`, `RevalidatePercent`, `NoStorePercent`, `NoDirectivePercent`, `FreshnessSeconds`, `ValidatorPercent`, `SharedCacheConflictPercent` | V11, V12, V13 |
+
+Every other counter in this package measures work the process did. This one measures work it told
+somebody else not to make it do again — and that is the only part of a site's performance whose
+effects are invisible from inside it. When the instruction is missing the request simply comes back,
+looking exactly like ordinary traffic, so the origin sees load it has no reason to question and the
+evidence that it was avoidable lives in a CDN report or a browser nobody is watching.
+
+Each response is classified from its `Cache-Control` and `Expires` headers into exactly one of five
+buckets, so the five shares always add to a hundred and read as one stacked chart:
+
+| Bucket | What the response said | What it costs you |
+| --- | --- | --- |
+| `PublicPercent` | Reusable, not marked `private` | Nothing — a CDN can serve it |
+| `PrivatePercent` | Reusable by the browser only | Repeat visitors are free; new ones are not |
+| `RevalidatePercent` | `no-cache`, `max-age=0` or `must-revalidate` | A round trip per use, though possibly a 304 |
+| `NoStorePercent` | `no-store` | The full response, every time, by instruction |
+| `NoDirectivePercent` | Nothing at all | The full response, every time, by accident |
+
+The last two look the same on a traffic graph and are completely different findings.
+`NoStorePercent` is a decision; `NoDirectivePercent` is the absence of one, and on most sites it is
+the largest of the five. Shares rather than counts, because "four hundred responses set no cache
+headers" depends on how busy the minute was and "sixty percent of what this site sends says nothing
+about caching" is the same statement at any traffic level.
+
+The three that are not shares of the bucket split:
+
+- **`FreshnessSeconds`** is published per response rather than averaged here, so the counter's own
+  aggregation keeps the maximum as well as the mean — one route with a ten-minute lifetime among a
+  thousand five-second ones is the interesting reading, and a mean would hide it. Only responses
+  that are actually reusable report one; a revalidating response is fresh for zero seconds by
+  definition, and publishing those zeros would drag the mean towards a number no response stated.
+  `max-age` wins over `s-maxage`, because the question is what the *client* may do.
+- **`ValidatorPercent`** is the share carrying an `ETag` or a `Last-Modified`, counted across every
+  bucket. Against `RevalidatePercent` it is the difference between a 304 and the whole body going
+  out again.
+- **`SharedCacheConflictPercent`** is the finding worth acting on: responses marked shared-cacheable
+  that also set a cookie. No shared cache will store one, so the cache headers on that route are
+  buying nothing at all while looking, in every other counter, as though they are. Because a counter
+  cannot carry a route, each one is also written to the log naming the path — without the query
+  string, deliberately — capped at five a minute so that one misconfigured route serving steadily
+  cannot fill the log with the same sentence.
+
+The measurement happens as the headers go on the wire, not on the way back out through the pipeline,
+because the headers are not final until then. On V12 and V13 that is `Response.OnStarting`, from
+middleware registered *first* so that its callback runs *last* — `OnStarting` callbacks run in
+reverse registration order — and therefore sees the finished header set. On V11 it is
+`AddOnSendingHeaders`, which matters more there than it sounds: System.Web does not materialise
+`Cache-Control` from `Response.Cache` until it generates the headers, so a page that configured its
+caching through `HttpCachePolicy` — on V11, most of them — would otherwise be counted as having said
+nothing at all.
+
+Nothing has to be added to `web.config` on V11: the module registers itself through
+`PreApplicationStartMethod`, so installing the package installs it. Integrated pipeline only, because
+classic mode has no managed response header collection to read.
+
+Every response is counted, including redirects, 304s and errors. What a site says about caching its
+failures is part of how cacheable it is, and excluding them would quietly change the denominator
+every share is computed against.
+
+### From the process
+
+| Prefix | Counters | Versions |
+| --- | --- | --- |
+| `Optimizely.Runtime.Process.` | `UptimeSeconds` | V11, V12, V13 |
+
+The cheapest counter here and the one that most often changes what another chart means. Almost
+everything above is a rate or an average over a warm process, and for the first minutes after a
+recycle every one of them describes a cold one instead and reads as a regression: the hit rate is
+low because the cache is empty, the GC series is short because the heap is small, the thread pool
+is still injecting threads. Overlay this and the question answers itself — a hit rate that collapses
+at the moment uptime drops to zero is a restart, not a cache problem, and telling those two apart
+otherwise means leaving the chart and going to read the platform's own logs.
+
+A sawtooth here is a finding on its own. Unexplained recycles are ordinary on Optimizely sites —
+memory limits, idle timeouts, an overlapped deployment, a crash the host restarted quietly — and the
+interval between the teeth is the number to take to whoever owns the hosting. It is a gauge, not a
+rate: nothing resets it, because the reset *is* the process.
+
+It has no switch of its own. `Optimizely:Instrumentation:Enabled` turns it off with everything else,
+but there is no per-feature flag, because the case for switching a measurement off — it perturbs
+what it measures, or it reads something the host might not give up — does not arise for one
+subtraction a minute against a timestamp taken at startup. Where the host declines to report the
+process start time, it falls back to when instrumentation started, which undercounts by the site's
+startup duration and by nothing else.
 
 ### Counters from elsewhere
 
@@ -437,7 +555,7 @@ Set `Optimizely.Performance.Counters.CMS.Initialization` and
        CMS.Core: 12.24.1
        ...
 [INFO] Telemetry Detection: Telemetry Systems: Application Insights 2.22.0.997, EventCounters
-[INFO] Registered 74 EventCounters with Application Insights, from 2 event sources
+[INFO] Registered 83 EventCounters with Application Insights, from 2 event sources
 [INFO] Registered IMetricTracker: EventCounterMetricTracker
 [INFO] Registering CMS performance counter decorators
 [INFO] Registered decorators: IContentLoader, IContentRepository, ISynchronizedObjectInstanceCache.
@@ -446,10 +564,15 @@ Set `Optimizely.Performance.Counters.CMS.Initialization` and
 [INFO] Optimizely CMS Performance Counters configured successfully
 [INFO] Reading cache lock contention from
        'EPiServer.Framework.Cache.Internal.MemoryObjectInstanceCache.CacheLock'.
+[INFO] Log write rate counters are active. Writes are counted at the host's default minimum
+       level, which is what an unconfigured logging provider sees.
+[INFO] Outbound response cacheability counters are active. Every response this process sends is
+       classified from its Cache-Control and Expires headers as it goes out; the nine
+       Optimizely.Runtime.Http counters report the mix once a minute.
 [INFO] Optimizely CMS Performance Counters initialized
 ```
 
-Sixty-two of those counters are this package's and twelve are SqlClient's, which is what the two
+Seventy-five of those counters are this package's and twelve are SqlClient's, which is what the two
 event sources are. The probes are quiet on a healthy start: the cache lock probe logs the one line
 above naming where it found the lock, and the others log only when they cannot start or when a
 sample crosses a threshold.
@@ -612,6 +735,33 @@ customMetrics
 ```
 
 ```kusto
+// Invalidations that never left this node. On a load-balanced site every one of these is a
+// window where the other instances are serving content this one has already discarded, so
+// the share is the number to alert on rather than the rate - a busy site and a quiet one
+// with the same bug read completely differently in absolute terms
+customMetrics
+| where name in (
+    "Optimizely.CMS.Cache.LocalOnlyInvalidationsPerSecond",
+    "Optimizely.CMS.Cache.SynchronizedInvalidationsPerSecond")
+| summarize
+    localOnly = avgif(value, name endswith "LocalOnlyInvalidationsPerSecond"),
+    synchronized = avgif(value, name endswith "SynchronizedInvalidationsPerSecond")
+    by bin(timestamp, 5m)
+| extend localOnlyShare = 100.0 * localOnly / (localOnly + synchronized)
+| project timestamp, localOnlyShare
+| render timechart
+```
+
+```kusto
+// Restarts, and what they explain. Uptime dropping to zero at the moment a rate counter
+// changes shape means the rate did not change - the process did
+customMetrics
+| where name in ("Optimizely.Runtime.Process.UptimeSeconds", "Optimizely.CMS.Cache.HitRate")
+| summarize avg(value) by name, bin(timestamp, 1m)
+| render timechart
+```
+
+```kusto
 // Commerce cart save latency percentiles
 customMetrics
 | where name == "Optimizely.Commerce.Orders.SaveTimeMs"
@@ -673,6 +823,44 @@ customMetrics
 customMetrics
 | where name startswith "Optimizely.Runtime.Logging."
 | summarize avg(value) by name, bin(timestamp, 1m)
+| render timechart
+```
+
+```kusto
+// The cacheability mix as one stacked chart. The five shares are mutually exclusive and
+// sum to a hundred, so this reads as a composition rather than five unrelated lines - and
+// the band worth watching is NoDirective, which is the absence of a decision rather than
+// a decision
+customMetrics
+| where name in (
+    "Optimizely.Runtime.Http.PublicPercent",
+    "Optimizely.Runtime.Http.PrivatePercent",
+    "Optimizely.Runtime.Http.RevalidatePercent",
+    "Optimizely.Runtime.Http.NoStorePercent",
+    "Optimizely.Runtime.Http.NoDirectivePercent")
+| summarize avg(value) by name, bin(timestamp, 5m)
+| render areachart
+```
+
+```kusto
+// What a release did to cacheability. A deployment that quietly drops a caching attribute
+// moves these two and nothing else, and the origin just gets busier - so it is worth
+// looking at deliberately rather than waiting for it to present as load
+customMetrics
+| where name in (
+    "Optimizely.Runtime.Http.PublicPercent",
+    "Optimizely.Runtime.Http.FreshnessSeconds")
+| summarize avg(value) by name, bin(timestamp, 1h)
+| render timechart
+```
+
+```kusto
+// Shared-cache conflicts: responses marked public that also set a cookie. Nonzero here
+// means cache headers that buy nothing. The log line names the route; this says how much
+// of the site's traffic it is
+customMetrics
+| where name == "Optimizely.Runtime.Http.SharedCacheConflictPercent"
+| summarize avg(value), max(valueMax) by bin(timestamp, 5m)
 | render timechart
 ```
 
@@ -809,6 +997,23 @@ The nine `FanOut`/`Evictions*`/`Ttl` counters are measured one layer below the o
 `Could not decorate IMemoryCache`. Hit rate, invalidation rate and the lock counters are unaffected.
 On V11 these counters are absent by design — there is no `IMemoryCache` beneath the object cache.
 
+### Response cacheability counters are missing
+
+`Optimizely.Runtime.Http.ResponsesPerSecond` is published every interval, zero included, so it is
+the one to look for first. If even that is absent, nothing is measuring.
+
+- **The site is on V11 in classic pipeline mode.** There is no managed response header collection
+  there, so the module subscribes to nothing rather than throwing once per request. Integrated mode
+  is required.
+- **`Optimizely:Instrumentation:Http:Enabled` is false**, or the master switch is.
+- **On V12 or V13, something replaced the request pipeline wholesale.** The middleware is added
+  through an `IStartupFilter`, which a host that builds its own `IApplicationBuilder` outside the
+  generic host can bypass.
+
+If the rate counter moves but the five shares are absent, that is not a fault: the shares are
+suppressed for an interval with no traffic in it, because a chart claiming nothing was cacheable
+during the quiet hours is worse than a gap. The gap is unambiguous next to a response rate of zero.
+
 ### SQL pool counters read a constant zero on V11
 
 `NumberOfActiveConnections`, `NumberOfFreeConnections` and the soft connect/disconnect rates need
@@ -836,6 +1041,14 @@ does not exist:
   individual counters.
 - **Three of the four probes are V12/V13 only.** GC pause and contention need .NET 6 or later;
   `IntervalPauseMs` needs .NET 8. The cache lock probe has nothing to find on V11.
+- **Cacheability is measured for the site as a whole, not per route.** The counters carry no
+  dimensions, so the mix is a single figure for everything the process sends; the only thing that
+  names a route is the shared-cache conflict log line. Finding *which* pages are in the
+  `NoDirective` band still means going and looking.
+- **Responses the site never sends are not counted.** Anything served from the IIS kernel cache, a
+  reverse proxy or a CDN edge never reaches the module or the middleware — which is the correct
+  behaviour for a counter measuring what this process emits, but means the mix describes origin
+  responses rather than what a browser ultimately received.
 - **Commerce is `IOrderRepository` only.** Pricing, inventory, promotions and payments are not
   instrumented.
 - **No search counters.** Neither Find (V11/V12) nor Graph (V13).
@@ -849,9 +1062,9 @@ does not exist:
 | | |
 | --- | --- |
 | [src/](src/) | The three packages, plus `src/Shared` for code that touches EPiServer types from both |
-| [tests/](tests/) | 153 tests, run on net472, net6.0, net8.0, net9.0 and net10.0 — container registration, published counter names, that the emitted set matches the subscribed set, probe lifecycle and emission, and graceful degradation of the cache lock reflection against every shape a future CMS could present |
+| [tests/](tests/) | 250 tests, run on net472, net6.0, net8.0, net9.0 and net10.0 — container registration, published counter names, that the emitted set matches the subscribed set, probe lifecycle and emission, cache-control classification across the whole decision tree, and graceful degradation of the cache lock reflection against every shape a future CMS could present |
 | [examples/](examples/) | Per-version settings, and `verify-package-install`, which installs the built packages from a local feed and asserts they bind and detect the right major. Builds on all six target frameworks; runs on whichever runtimes are installed |
-| [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) | Five-stage verification on a real site |
+| [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) | Eight-stage verification on a real site |
 | [ARCHITECTURE.md](ARCHITECTURE.md), [TELEMETRY_ARCHITECTURE.md](TELEMETRY_ARCHITECTURE.md) | Design notes |
 
 ---

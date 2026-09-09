@@ -4,7 +4,7 @@ Confirming, on a real site, that the packages install, that the initialization m
 counters reach `dotnet-counters` and Application Insights Live Metrics, and that a counter can be
 followed back to the requests it affected.
 
-Stage 1 needs nothing. Stages 2 to 7 need a licensed Optimizely site, and Stage 7 additionally needs
+Stage 1 needs nothing. Stages 2 to 8 need a licensed Optimizely site, and Stage 8 additionally needs
 Application Insights to have been collecting for long enough to have a spike worth querying.
 
 ---
@@ -22,7 +22,7 @@ Expected:
 Target framework      : net10.0
 EventSource name      : Optimizely-Performance
 Compiled for          : V13
-Registered counters   : 62
+Registered counters   : 71
 EventSource state     : healthy
 CMS module            : Optimizely.Performance.Counters.CMS loaded
 Commerce module       : Optimizely.Performance.Counters.Commerce loaded
@@ -97,8 +97,8 @@ Six lines matter, in this order:
    `ConfigureContainer` and takes the site down at startup, so if the site is running at all this
    one passed.
 2. **Telemetry detection.** Either
-   `Registered 74 EventCounters with Application Insights, from 2 event sources`, or the "no
-   telemetry system detected" line with the `dotnet-counters` command in it. Sixty-two of those are
+   `Registered 83 EventCounters with Application Insights, from 2 event sources`, or the "no
+   telemetry system detected" line with the `dotnet-counters` command in it. Seventy-five of those are
    this package's and twelve are SqlClient's.
 
    On V11 expect two different lines instead: `Registered 8 SQL connection pool performance counters
@@ -142,7 +142,7 @@ Then drive some traffic - load a page, edit and publish content, add something t
 Expected: the counters below appear and move. Counters are polled on an interval, so allow a few
 seconds.
 
-All sixty-two are listed from the moment the EventSource is constructed, whether or not any traffic
+All seventy-five are listed from the moment the EventSource is constructed, whether or not any traffic
 has reached them yet, so a counter sitting at zero means the decorator that owns it has not been
 hit - not that anything is broken. They are created up front deliberately: an EventCounter is polled
 through a group that arms its timer when the collector attaches, and the group does not exist until
@@ -153,7 +153,7 @@ Application Insights used to show nothing at all here.
 | Prefix | Counters |
 | --- | --- |
 | `Optimizely.CMS.Content.` | `LoadTimeMs`, `LoadOperations`, `SaveTimeMs`, `SaveOperations`, `PublishTimeMs`, `PublishOperations`, `DeleteTimeMs`, `DeleteOperations`, `MoveTimeMs`, `MoveOperations`, `ItemsLoaded` |
-| `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations` |
+| `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations`, `SynchronizedInvalidationsPerSecond`, `LocalOnlyInvalidationsPerSecond`, `RemoteInvalidationsPerSecond` |
 | `Optimizely.CMS.Cache.` *(cascade)* | `RemovalFanOut`, `RemoteRemovalFanOut`, `InsertFanOut`, `RemovalDurationMs`, `InsertTtlSeconds`, `EvictionsExpired`, `EvictionsCapacity`, `EvictionsReplaced`, `EvictionsTokenExpired` |
 | `Optimizely.CMS.Cache.` *(lock probe)* | `LockWaitingWriters`, `LockWaitingReaders`, `LockCurrentReaders`, `LockWriteHeldPercent` |
 | `Optimizely.CMS.Events.` | `EventsPerSecond`, `RemoteEventsPerSecond`, `RemoteEventFailuresPerSecond`, `AverageRemoteEventDeliveryTimeMs` *(V13 only)* |
@@ -161,9 +161,11 @@ Application Insights used to show nothing at all here.
 | `Optimizely.Runtime.GC.` | `Gen0PauseMs`, `Gen1PauseMs`, `Gen2PauseMs`, `Gen2BackgroundPauseMs`, `PauseTimePercent`, `IntervalPauseMs`, `PauseDutyCyclePercent` |
 | `Optimizely.Runtime.Contention.` | `ContentionsPerSecond`, `BurstContentions`, `BurstWaitP50Ms`, `BurstWaitP95Ms`, `BurstWaitMaxMs` |
 | `Optimizely.Runtime.Logging.` | `WritesPerSecond`, `WarningsPerSecond`, `ErrorsPerSecond` |
+| `Optimizely.Runtime.Http.` | `ResponsesPerSecond`, `PublicPercent`, `PrivatePercent`, `RevalidatePercent`, `NoStorePercent`, `NoDirectivePercent`, `FreshnessSeconds`, `ValidatorPercent`, `SharedCacheConflictPercent` |
+| `Optimizely.Runtime.Process.` | `UptimeSeconds` |
 | `Optimizely.Commerce.Orders.` | `SaveTimeMs`, `SaveOperations`, `LoadTimeMs`, `LoadOperations`, `CreateTimeMs`, `CreateOperations`, `DeleteTimeMs`, `DeleteOperations`, `CartLineItemCount`, `CartTotal`, `CartsLoaded` |
 
-Sixty-two in total. `Optimizely.CMS.Events.*` needs V13; the `Optimizely.Commerce.Orders.*` counters
+Seventy-five in total. `Optimizely.CMS.Events.*` needs V13; the `Optimizely.Commerce.Orders.*` counters
 need the Commerce package.
 
 The probe counters behave differently from the decorator counters and are worth checking separately,
@@ -184,6 +186,27 @@ because they move without any traffic at all:
   was not loaded. Note that V12 and V13 count at the host's default minimum level, so raising it -
   `"Logging": { "OptimizelyLogWriteRate": { "LogLevel": { "Default": "Debug" } } }` - widens what the
   counter sees without changing what any real sink writes.
+- **`Optimizely.Runtime.Http.*`** move on any request at all, including the one that loaded the
+  page you are looking at. `ResponsesPerSecond` is published every interval, zero included, so it
+  is the one to check first; if it is flat zero on a site you are actively browsing, nothing is
+  measuring. The five shares are *not* published for an interval with no traffic in it, so a gap
+  in those next to a zero response rate is correct rather than broken. `FreshnessSeconds` only
+  appears once some response has stated a lifetime.
+  To exercise `SharedCacheConflictPercent` deliberately, serve one response that sets both
+  `Cache-Control: public, max-age=600` and a cookie; the counter should move and one
+  `Information` line naming the path should appear in the log.
+- **`Optimizely.Runtime.Process.UptimeSeconds`** moves on every site, needs nothing, and is the
+  one counter here that cannot legitimately be missing. If it is absent, the runtime probes did not
+  start at all - check the startup log rather than anything to do with this counter. It should read
+  roughly the age of the worker process; a value close to zero on a site that has been up for hours
+  means the host declined to report the process start time and the fallback took over, which is
+  worth knowing but not a fault.
+- **`Optimizely.CMS.Cache.LocalOnlyInvalidationsPerSecond`** and its two siblings are published
+  every interval, zero included, so all three should be present immediately. A flat zero on
+  `LocalOnlyInvalidationsPerSecond` is the good reading and the common one - it means nothing in the
+  site is calling `RemoveLocal` on shared content. To confirm the split works rather than merely
+  reads zero, publish a page and watch `SynchronizedInvalidationsPerSecond` move; on a multi-node
+  site `RemoteInvalidationsPerSecond` should move on the *other* instances at the same time.
 - **`Optimizely.CMS.Cache.Lock*`** need the lock to have been found - see Stage 2, line 6. Publish
   content to make `LockWaitingWriters` move; on an idle site all four are legitimately zero.
 - **The nine cascade counters** need an invalidation with dependents. Publishing a page that others
@@ -281,7 +304,46 @@ test run, so a drift in the counter names themselves fails the build rather than
 
 ---
 
-## Stage 6 - both packages side by side
+## Stage 6 - response cacheability on V11
+
+The one measurement in the package with no unit test behind it, so this stage is not optional on a
+V11 release. `HttpResponse.Headers` throws outside a running integrated-mode pipeline and System.Web
+offers nothing to stand in for one, so the only place the V11 half of this feature can be exercised
+is a site.
+
+1. **Confirm the module reached the pipeline.** It is added through `PreApplicationStartMethod`
+   rather than a `web.config` entry, so there is nothing to check in configuration - check the
+   pipeline itself. Enable failed request tracing for a request, or read `HttpContext.Current.
+   ApplicationInstance.Modules` from a diagnostic page: `HttpCacheabilityModule` should be listed.
+   If it is not, the registration was swallowed - which it is on purpose, because an exception there
+   stops the application from starting - and the likely cause is `Microsoft.Web.Infrastructure`
+   missing from `bin`.
+
+2. **Confirm the application pool is in integrated mode.** Classic mode has no managed response
+   header collection, and the module subscribes to nothing at all rather than throwing once per
+   request. This is the most likely reason for a silent zero on an otherwise healthy V11 site.
+
+3. **Read the counters.** `dotnet-counters` does not attach to .NET Framework, so use PerfView or an
+   `EventListener` against `Optimizely-Performance`, as in Stage 3. Browse a few pages and confirm
+   `Optimizely.Runtime.Http.ResponsesPerSecond` moves.
+
+4. **Confirm `HttpCachePolicy` is being seen.** This is the V11-specific correctness check and the
+   reason the module measures at `AddOnSendingHeaders` rather than at `EndRequest`: System.Web does
+   not materialise `Cache-Control` from `Response.Cache` until it generates the headers. Serve a page
+   that sets its caching through the policy object rather than the header -
+
+   ```csharp
+   Response.Cache.SetCacheability(HttpCacheability.Public);
+   Response.Cache.SetMaxAge(TimeSpan.FromMinutes(10));
+   ```
+
+   - and confirm it lands in `PublicPercent` with a `FreshnessSeconds` of 600. If it lands in
+   `NoDirectivePercent` instead, the measurement is running too early and every page on the site that
+   configures caching this way is being miscounted.
+
+---
+
+## Stage 7 - both packages side by side
 
 On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
 
@@ -296,10 +358,15 @@ On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
   broke is `Optimizely.Runtime.ThreadPool.QueueDelayMs` reporting roughly twice the sample count.
 - **The cache lock probe runs only from the CMS module**, so a Commerce-only host logs nothing about
   it at all - not even the "will not be reported" line.
+- **Each response is classified once, not twice.** Both modules register the middleware, through
+  `TryAddEnumerable` against one implementation type, and both start the recorder, through the same
+  process-wide monitor. The give-away if this ever broke is peculiar rather than obvious:
+  `Optimizely.Runtime.Http.ResponsesPerSecond` would read double while the five shares, being
+  shares, would still read correctly.
 
 ---
 
-## Stage 7 - from a counter back to the requests (V12 / V13)
+## Stage 8 - from a counter back to the requests (V12 / V13)
 
 The stages above end at *the counter arrived*. This one ends at *the counter was useful*, which is
 a different claim and the one an operator actually needs. It is worth running once on a site you
@@ -388,3 +455,10 @@ quiet windows on the same instance.
 - **The `Burst*` contention counters and the cache lock counters are zero on a healthy site.**
   That is correct behaviour, but it makes them hard to smoke test - see the notes in Stage 3 for
   how to provoke each one.
+- **The V11 response cacheability module has no unit test.** `HttpResponse.Headers` throws outside a
+  running integrated-mode pipeline, and there is no System.Web equivalent of `DefaultHttpContext` to
+  hand it, so what the tests can reach is the registration contract and the classifier either side
+  of it - not the header read between them. Stage 6 is the coverage.
+- **The cacheability mix is not broken down by route.** Counters carry no dimensions, so the shares
+  describe everything the process sends. Only the shared-cache conflict names a path, and only in
+  the log.

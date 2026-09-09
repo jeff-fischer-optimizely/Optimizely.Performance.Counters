@@ -79,6 +79,116 @@ namespace Optimizely.Performance.Counters.Tests.Decorators
         }
 
         [Fact]
+        public void Each_removal_route_is_counted_under_its_own_name()
+        {
+            var tracker = new RecordingMetricTracker();
+            using var decorator = Wrap(new StubCache(), tracker);
+
+            decorator.Remove("a");
+            decorator.Remove("b");
+            decorator.Remove("c");
+            decorator.RemoveLocal("d");
+            decorator.RemoveLocal("e");
+            decorator.RemoveRemote("f");
+
+            MetricFlush.Run(decorator);
+
+            // The whole point of the split: the total says six invalidations a minute and gives no
+            // hint that two of them left five other nodes holding stale entries.
+            Assert.Equal(
+                3.0 / 60.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.SynchronizedInvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                2.0 / 60.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.LocalOnlyInvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                1.0 / 60.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.RemoteInvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                6.0 / 60.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.InvalidationsPerSecond"),
+                precision: 6);
+        }
+
+        [Fact]
+        public void A_route_that_saw_nothing_still_reports_zero()
+        {
+            var tracker = new RecordingMetricTracker();
+            using var decorator = Wrap(new StubCache(), tracker);
+
+            decorator.Remove("a");
+
+            MetricFlush.Run(decorator);
+
+            // A site with no RemoveLocal calls is the good case, and the counter has to be able to
+            // say so. Skipping the emission would make "no problem here" indistinguishable from
+            // "the decorator is not installed", which is the one confusion this counter cannot
+            // afford - it is read to rule a fault out.
+            Assert.Equal(
+                0.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.LocalOnlyInvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                0.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.RemoteInvalidationsPerSecond"),
+                precision: 6);
+        }
+
+        [Fact]
+        public void The_routes_reset_after_a_flush()
+        {
+            var tracker = new RecordingMetricTracker();
+            using var decorator = Wrap(new StubCache(), tracker);
+
+            decorator.RemoveLocal("a");
+            MetricFlush.Run(decorator);
+            MetricFlush.Run(decorator);
+
+            // ValueOf takes the last emission, so a rate that carried over would still read as one
+            // per minute here rather than dropping back to nothing.
+            Assert.Equal(
+                0.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.LocalOnlyInvalidationsPerSecond"),
+                precision: 6);
+        }
+
+#if !CMS13
+        [Fact]
+        [System.Obsolete("Exercises the obsolete Clear member on purpose.")]
+        public void A_clear_is_counted_in_the_total_and_under_no_route()
+        {
+            var tracker = new RecordingMetricTracker();
+            using var decorator = Wrap(new StubCache(), tracker);
+
+            decorator.Clear();
+
+            MetricFlush.Run(decorator);
+
+            // A bulk invalidation with no route of its own, which is why the three routes are
+            // documented as not summing to the total rather than asserted to.
+            Assert.Equal(
+                1.0 / 60.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.InvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                0.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.SynchronizedInvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                0.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.LocalOnlyInvalidationsPerSecond"),
+                precision: 6);
+            Assert.Equal(
+                0.0,
+                ValueOf(tracker, "Optimizely.CMS.Cache.RemoteInvalidationsPerSecond"),
+                precision: 6);
+        }
+#endif
+
+        [Fact]
         public void The_counters_reset_after_a_flush()
         {
             var tracker = new RecordingMetricTracker();

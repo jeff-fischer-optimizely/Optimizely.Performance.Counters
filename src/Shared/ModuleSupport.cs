@@ -4,6 +4,7 @@ using EPiServer.ServiceLocation;
 using Microsoft.Extensions.Logging;
 using Optimizely.Performance.Counters.Core.Configuration;
 using Optimizely.Performance.Counters.Core.Diagnostics;
+using Optimizely.Performance.Counters.Core.Http;
 using Optimizely.Performance.Counters.Core.Telemetry;
 #if !CMS11
 using Microsoft.Extensions.DependencyInjection;
@@ -289,6 +290,61 @@ namespace Optimizely.Performance.Counters.Shared
             }
 
             LogWriteRateMonitor.Start(metrics, options, logger);
+        }
+
+#if !CMS11
+        /// <summary>
+        /// Registers the startup filter that measures outbound response cacheability on V12 and
+        /// V13.
+        /// </summary>
+        /// <param name="context">Container configuration context supplied by the framework.</param>
+        /// <param name="logger">Log sink; may be null.</param>
+        /// <remarks>
+        /// Registered here rather than started in <c>Initialize</c> for the same reason the logging
+        /// provider is: the host reads its startup filters out of the container while it builds the
+        /// request pipeline, and by <c>Initialize</c> that has happened. The middleware is in place
+        /// and inert until <see cref="StartHttpCacheability"/> publishes a recorder.
+        /// <para>
+        /// The de-duplication that keeps a site with both packages from counting every response
+        /// twice is inside <c>HttpCacheabilityRegistration</c>, along with the ASP.NET Core types -
+        /// neither the CMS nor the Commerce assembly references those, and neither needs to.
+        /// </para>
+        /// </remarks>
+        internal static void RegisterHttpCacheability(
+            ServiceConfigurationContext context, ILogger? logger) =>
+            HttpCacheabilityRegistration.Register(context.Services, logger);
+#endif
+
+        /// <summary>
+        /// Starts the outbound response cacheability counters, if nothing has started them already.
+        /// </summary>
+        /// <param name="context">Initialization context, holding the built container.</param>
+        /// <param name="options">Cacheability options, as read from configuration.</param>
+        /// <param name="logger">Log sink; may be null.</param>
+        /// <remarks>
+        /// Called from both modules, and idempotent for the same reason
+        /// <see cref="StartLogWriteRate"/> is: <see cref="HttpCacheabilityMonitor"/> makes the
+        /// second call a no-op, so neither module has to know whether the other is installed.
+        /// </remarks>
+        internal static void StartHttpCacheability(
+            InitializationEngine context, HttpCacheabilityOptions options, ILogger? logger)
+        {
+            if (!options.Enabled)
+            {
+                return;
+            }
+
+            var metrics = ResolveFromEngine<IMetricTracker>(context);
+
+            if (metrics == null)
+            {
+                logger?.LogInformation(
+                    "Response cacheability counters were not started: no IMetricTracker could be " +
+                    "resolved.");
+                return;
+            }
+
+            HttpCacheabilityMonitor.Start(metrics, options, logger);
         }
 
 #if CMS11

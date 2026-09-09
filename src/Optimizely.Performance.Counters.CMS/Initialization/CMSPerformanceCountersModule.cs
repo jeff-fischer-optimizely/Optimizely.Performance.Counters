@@ -17,6 +17,7 @@ using Optimizely.Performance.Counters.CMS.Decorators;
 using Optimizely.Performance.Counters.CMS.Diagnostics;
 using Optimizely.Performance.Counters.Core.Configuration;
 using Optimizely.Performance.Counters.Core.Diagnostics;
+using Optimizely.Performance.Counters.Core.Http;
 using Optimizely.Performance.Counters.Core.Telemetry;
 using Optimizely.Performance.Counters.Shared;
 using Optimizely.Performance.Counters.VersionDetection;
@@ -101,6 +102,14 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
                 RegisterLogWriteRateProvider(context);
             }
 
+            if (_options.Http.Enabled)
+            {
+                // Registered here for the same reason, and with the same consequence: the host
+                // reads its startup filters while building the request pipeline, which has already
+                // happened by Initialize. The middleware goes in inert.
+                RegisterHttpCacheability(context, _logger);
+            }
+
             if (_options.Cache.Cascade.Enabled)
             {
                 RegisterCascadeInstrumentation(context);
@@ -143,6 +152,7 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
             StartRuntimeProbes(context, _options.Probes, _logger);
             StartCacheLockProbe(context);
             StartLogWriteRate(context, _options.Logging, _logger);
+            StartHttpCacheability(context, _options.Http, _logger);
 
             _logger?.LogInformation("Optimizely CMS Performance Counters initialized");
         }
@@ -156,6 +166,7 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
         {
             RuntimeProbes.Stop();
             LogWriteRateMonitor.Stop();
+            HttpCacheabilityMonitor.Stop();
 
             _cacheLockProbe?.Dispose();
             _cacheLockProbe = null;
