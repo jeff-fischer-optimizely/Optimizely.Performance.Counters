@@ -149,6 +149,17 @@ namespace Optimizely.Performance.Counters.Tests.Infrastructure
         /// </summary>
         protected override void OnEventWritten(EventWrittenEventArgs eventData)
         {
+            // Only this package's source. A listener is supposed to receive events from the sources
+            // it enabled and no others, but the runtime tracks that with a per-listener index into a
+            // global source list, and test classes running in parallel construct listeners and
+            // sources concurrently - which is enough to have another test's source delivered here.
+            // Without this, SqlClient's pool counters arrive as names the registry has never heard
+            // of and this whole class fails on somebody else's counters.
+            if (!string.Equals(eventData.EventSource?.Name, CounterNames.EventSourceName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
             if (eventData.Payload == null || eventData.Payload.Count == 0)
             {
                 return;

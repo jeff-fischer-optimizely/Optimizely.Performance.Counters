@@ -83,6 +83,51 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
             Assert.Equal(expected, requested);
         }
 
+        /// <summary>
+        /// The connection pool counters come from SqlClient's own event source, so nothing else in
+        /// this package would notice if they stopped being asked for.
+        /// </summary>
+        [Fact]
+        public void Every_sql_client_pool_counter_is_requested_from_the_module()
+        {
+            var registered = Register(times: 1);
+
+            var requested = registered.Module.Counters
+                .Where(request => request.EventSourceName == SqlClientCounters.EventSourceName)
+                .Select(request => request.EventCounterName)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+
+            var expected = SqlClientCounters.All
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+
+            Assert.Equal(expected, requested);
+        }
+
+        /// <summary>
+        /// A site already collecting SqlClient's counters must not end up collecting them twice.
+        /// </summary>
+        /// <remarks>
+        /// Registering counters from somebody else's event source is what makes this reachable.
+        /// While this only ever asked for its own, a collision could only come from installing both
+        /// packages; now it can come from the site's own configuration.
+        /// </remarks>
+        [Fact]
+        public void A_counter_the_site_already_collects_is_not_requested_again()
+        {
+            var alreadyCollected = SqlClientCounters.All[0];
+
+            var registered = Register(
+                times: 1,
+                new EventCounterCollectionRequest(SqlClientCounters.EventSourceName, alreadyCollected));
+
+            Assert.Single(
+                registered.Module.Counters,
+                request => request.EventSourceName == SqlClientCounters.EventSourceName &&
+                           request.EventCounterName == alreadyCollected);
+        }
+
         [Fact]
         public void The_registration_reaches_the_collection_module_at_all()
         {
@@ -144,7 +189,10 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
         /// <param name="times">
         /// How many packages are doing the registering. Two is the Commerce site case.
         /// </param>
-        private static Registration Register(int times)
+        /// <param name="alreadyCollected">
+        /// Counters the site configured for itself before this package ran.
+        /// </param>
+        private static Registration Register(int times, params EventCounterCollectionRequest[] alreadyCollected)
         {
             var services = new ServiceCollection();
             var log = new RecordingLogger();
@@ -156,6 +204,11 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
 
             var module = new EventCounterCollectionModule();
             var applied = 0;
+
+            foreach (var request in alreadyCollected)
+            {
+                module.Counters.Add(request);
+            }
 
             foreach (var descriptor in services)
             {

@@ -11,6 +11,11 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
     /// <summary>
     /// Registers our finite list of Optimizely EventCounters with Application Insights.
     /// Uses minimal reflection to avoid hard dependency on Application Insights.
+    /// <para>
+    /// Not every counter registered here is one this package produces. The SqlClient connection
+    /// pool counters come from SqlClient's own event source, and are listed because a site
+    /// diagnosing a cache problem almost always needs them next - see <see cref="SqlClientCounters"/>.
+    /// </para>
     /// </summary>
     public static class ApplicationInsightsRegistration
     {
@@ -126,8 +131,9 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
                 configureMethod.Invoke(null, new object[] { services, configureAction });
 
                 logger?.LogInformation(
-                    "Registered {Count} Optimizely EventCounters with Application Insights",
-                    EventCounterRegistry.GetAllCounterNames().Count());
+                    "Registered {Count} EventCounters with Application Insights, from {SourceCount} event sources",
+                    CountersToCollect().Count(),
+                    CountersToCollect().Select(counter => counter.Source).Distinct().Count());
             }
             catch (Exception ex)
             {
@@ -231,39 +237,72 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             // aggregations that quietly read high.
             var requested = AlreadyRequested(counters, requestType);
 
-            foreach (var counterName in EventCounterRegistry.GetAllCounterNames())
+            foreach (var counter in CountersToCollect())
             {
-                if (!requested.Add(counterName))
+                if (!requested.Add(counter))
                 {
                     continue;
                 }
 
                 try
                 {
-                    // new EventCounterCollectionRequest("Optimizely-Performance", counterName)
-                    var request = Activator.CreateInstance(requestType, CounterNames.EventSourceName, counterName);
+                    // new EventCounterCollectionRequest(eventSourceName, counterName)
+                    var request = Activator.CreateInstance(requestType, counter.Source, counter.Counter);
                     addMethod.Invoke(counters, new[] { request });
                 }
                 catch (Exception ex)
                 {
-                    logger?.LogDebug(ex, "Failed to add counter {CounterName}", counterName);
+                    logger?.LogDebug(
+                        ex,
+                        "Failed to add counter {CounterName} from {EventSourceName}",
+                        counter.Counter,
+                        counter.Source);
                 }
             }
         }
 
         /// <summary>
-        /// The counter names already requested from our own EventSource, so a second registration
-        /// adds nothing.
+        /// Every counter to ask the collector for, as an event source and a counter name.
         /// </summary>
         /// <remarks>
+        /// The source has to travel with the name now that more than one source is involved. A
+        /// counter name is only unique within its source, and the collector matches on both.
+        /// </remarks>
+        private static IEnumerable<(string Source, string Counter)> CountersToCollect()
+        {
+            foreach (var counterName in EventCounterRegistry.GetAllCounterNames())
+            {
+                yield return (CounterNames.EventSourceName, counterName);
+            }
+
+#if !NET472
+            // SqlClient's own counters. On .NET Framework the same measurements are Windows
+            // performance counters instead, which this collector cannot read - see SqlClientCounters.
+            foreach (var counterName in SqlClientCounters.All)
+            {
+                yield return (SqlClientCounters.EventSourceName, counterName);
+            }
+#endif
+        }
+
+        /// <summary>
+        /// The counters already requested from the module, so a second registration adds nothing.
+        /// </summary>
+        /// <remarks>
+        /// <para>
         /// Read off the module rather than tracked in a static, so it stays right when the host
         /// builds more than one module, and when the site has configured some of these counters
-        /// itself. Only our own EventSource is considered; what else the host collects is its
-        /// business.
+        /// itself.
+        /// </para>
+        /// <para>
+        /// Every request is read, not only the ones naming our own event source. That mattered less
+        /// when this registered nothing but its own counters; now that it also asks for SqlClient's,
+        /// a site already collecting those would otherwise get each of them twice.
+        /// </para>
         /// </remarks>
-        private static HashSet<string> AlreadyRequested(object counters, Type requestType)
+        private static HashSet<(string Source, string Counter)> AlreadyRequested(object counters, Type requestType)
         {
-            var requested = new HashSet<string>(StringComparer.Ordinal);
+            var requested = new HashSet<(string Source, string Counter)>();
 
             var sourceProperty = requestType.GetProperty("EventSourceName", BindingFlags.Public | BindingFlags.Instance);
             var nameProperty = requestType.GetProperty("EventCounterName", BindingFlags.Public | BindingFlags.Instance);
@@ -276,10 +315,10 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             foreach (var request in requests)
             {
                 if (request != null &&
-                    sourceProperty.GetValue(request) as string == CounterNames.EventSourceName &&
+                    sourceProperty.GetValue(request) is string sourceName &&
                     nameProperty.GetValue(request) is string counterName)
                 {
-                    requested.Add(counterName);
+                    requested.Add((sourceName, counterName));
                 }
             }
 

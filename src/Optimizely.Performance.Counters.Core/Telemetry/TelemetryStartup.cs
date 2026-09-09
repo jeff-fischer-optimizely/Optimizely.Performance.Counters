@@ -21,8 +21,10 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         /// <param name="services">
         /// The container being configured, or null on CMS 11. V11 configures services through
         /// <c>IServiceConfigurationProvider</c> rather than <see cref="IServiceCollection"/>, and
-        /// the Application Insights registration needs the latter - so on V11 the detection still
-        /// runs and is logged, but nothing is subscribed.
+        /// the EventCounter registration needs the latter - so on V11 the detection still runs and
+        /// is logged, but this package's own counters are not subscribed. The SQL connection pool
+        /// counters are, because on .NET Framework they are Windows performance counters and reach
+        /// Application Insights through a collector built here rather than through the container.
         /// </param>
         /// <param name="logger">Log sink; may be null during container configuration.</param>
         public static void Configure(IServiceCollection? services, ILogger? logger)
@@ -34,8 +36,28 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             {
                 if (services == null)
                 {
+#if NET472
+                    // V11. The EventCounter registration needs an IServiceCollection and there is
+                    // none, so this package's own counters still have to be read off the EventSource
+                    // directly. The SQL connection pool counters are the exception: on .NET Framework
+                    // they are Windows performance counters, which are collected through a module
+                    // built here rather than through the container.
+                    WindowsPerformanceCounterRegistration.Register(logger);
+
+                    // dotnet-counters is deliberately not suggested here, unlike everywhere else
+                    // this message appears: it attaches over EventPipe, which is a .NET Core
+                    // construct, so on .NET Framework the advice would not work.
+                    logger?.LogInformation(
+                        "Application Insights detected - V11 has no IServiceCollection, so the " +
+                        "{EventSourceName} counters are not registered with it. Read them off the " +
+                        "EventSource directly with PerfView or your own EventListener, enabling " +
+                        "the source named {EventSourceName}.",
+                        CounterNames.EventSourceName,
+                        CounterNames.EventSourceName);
+#else
                     logger?.LogInformation(
                         "Application Insights detected - V11 AI registration not yet implemented, use EventSource directly");
+#endif
                 }
                 else
                 {

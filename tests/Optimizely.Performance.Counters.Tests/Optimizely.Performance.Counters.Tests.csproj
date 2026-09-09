@@ -93,11 +93,20 @@
     no counterpart there at all. Supporting it is a feature, not a version bump - see the note in
     docs/SMOKE_TEST.md.
 
-    Not referenced on net472. V11 has no IServiceCollection to register against, so there is no
-    registration path there to test - see the gap noted in docs/SMOKE_TEST.md.
+    The AspNetCore package is not referenced on net472: V11 has no IServiceCollection, so the
+    ConfigureTelemetryModule path this brings in does not exist there. The PerfCounterCollector
+    package is referenced instead, because the one thing V11 does have a registration path for is
+    the SQL connection pool counters - Windows performance counters, collected through a
+    PerformanceCollectorModule that WindowsPerformanceCounterRegistration builds itself. Same
+    reasoning as above: only a real module can tell whether the reflection still binds. See
+    WindowsPerformanceCounterRegistrationTests.
   -->
   <ItemGroup Condition="'$(TargetFramework)' != 'net472'">
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.23.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.ApplicationInsights.PerfCounterCollector" Version="2.23.0" />
   </ItemGroup>
 
 </Project>
