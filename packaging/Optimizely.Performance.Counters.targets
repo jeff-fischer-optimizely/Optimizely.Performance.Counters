@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+
+  <!--
+    Shipped inside both Optimizely.Performance.Counters.CMS and .Commerce, each under its own
+    build\<PackageId>.targets, so NuGet imports it whichever of the two a site installs.
+
+    What it does: drops the settings template for the site's .NET version into
+    App_Data\Optimizely.Performance.Counters\ on the first build after installation, and says on
+    the build output where it put it. It never overwrites a file that is already there, so an
+    operator's edits survive every later build, upgrade and reinstall.
+
+    Why a build target rather than package content: content\ is only copied by packages.config,
+    which V12 and V13 sites do not use. A PackageReference site sees contentFiles listed in the
+    package and nothing on disk, which is no use to somebody looking for the settings to change.
+
+    If both packages are installed, both files are imported and the second definition of the target
+    below overrides the first. They are byte-identical and ship identical templates, so one of them
+    runs and the outcome is the same either way.
+
+    To turn all of this off:
+      <PropertyGroup>
+        <OptimizelyInstrumentationCopyTemplate>false</OptimizelyInstrumentationCopyTemplate>
+      </PropertyGroup>
+  -->
+
+  <PropertyGroup>
+    <OptimizelyInstrumentationCopyTemplate Condition="'$(OptimizelyInstrumentationCopyTemplate)' == ''">true</OptimizelyInstrumentationCopyTemplate>
+
+    <!-- App_Data because it is the one folder every Optimizely site of every version already has,
+         is already excluded from being served, and is already where operators look for things the
+         site reads but does not publish. -->
+    <OptimizelyInstrumentationTemplateFolder Condition="'$(OptimizelyInstrumentationTemplateFolder)' == ''">$(MSBuildProjectDirectory)\App_Data\Optimizely.Performance.Counters\</OptimizelyInstrumentationTemplateFolder>
+
+    <_OptimizelyInstrumentationSource>$(MSBuildThisFileDirectory)templates\</_OptimizelyInstrumentationSource>
+
+    <!-- V11 merges an <appSettings> block into web.config; V12 and V13 merge a block into
+         appsettings.json. Only the one the site can use is delivered. -->
+    <_OptimizelyInstrumentationTemplate Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework'">Optimizely.Instrumentation.template.config</_OptimizelyInstrumentationTemplate>
+    <_OptimizelyInstrumentationTemplate Condition="'$(_OptimizelyInstrumentationTemplate)' == ''">Optimizely.Instrumentation.template.json</_OptimizelyInstrumentationTemplate>
+  </PropertyGroup>
+
+  <Target Name="OptimizelyInstrumentationDeliverTemplate"
+          BeforeTargets="Build"
+          Condition="'$(OptimizelyInstrumentationCopyTemplate)' == 'true' And Exists('$(_OptimizelyInstrumentationSource)')">
+
+    <!-- Captured before the Copy runs. Exists() is evaluated at execution time, so testing the
+         destination again afterwards would report the file this target had just written. -->
+    <PropertyGroup>
+      <_OptimizelyInstrumentationDestination>$(OptimizelyInstrumentationTemplateFolder)$(_OptimizelyInstrumentationTemplate)</_OptimizelyInstrumentationDestination>
+      <_OptimizelyInstrumentationIsFirstRun Condition="!Exists('$(_OptimizelyInstrumentationDestination)')">true</_OptimizelyInstrumentationIsFirstRun>
+    </PropertyGroup>
+
+    <Copy SourceFiles="$(_OptimizelyInstrumentationSource)$(_OptimizelyInstrumentationTemplate);$(_OptimizelyInstrumentationSource)README_AFTER_INSTALL.md"
+          DestinationFolder="$(OptimizelyInstrumentationTemplateFolder)"
+          SkipUnchangedFiles="true"
+          Condition="'$(_OptimizelyInstrumentationIsFirstRun)' == 'true'" />
+
+    <Message Importance="High"
+             Condition="'$(_OptimizelyInstrumentationIsFirstRun)' == 'true'"
+             Text="Optimizely.Performance.Counters: settings template written to App_Data\Optimizely.Performance.Counters\$(_OptimizelyInstrumentationTemplate). Every value in it is the default, so the site behaves the same until you change one. See README_AFTER_INSTALL.md in the same folder." />
+  </Target>
+
+  <!--
+    The template is documentation for the operator, not a file the site loads - the settings are
+    read from web.config or appsettings.json once they have been merged there. Keeping it out of
+    the default Content glob stops it being copied to the output folder and published.
+  -->
+  <ItemGroup>
+    <Content Remove="App_Data\Optimizely.Performance.Counters\**" />
+    <None Remove="App_Data\Optimizely.Performance.Counters\**" />
+  </ItemGroup>
+
+</Project>

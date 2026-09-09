@@ -24,7 +24,7 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
             new HashSet<string>(EventCounterRegistry.GetAllCounterNames());
 
         private static readonly PublishedCounterNames.Result Observed =
-            PublishedCounterNames.Observe(() => DecoratorSweep.DriveEverything(new EventCounterMetricTracker()));
+            PublishedCounterNames.Observe(() => EmitterSweep.DriveEverything(new EventCounterMetricTracker()));
 
         private static IReadOnlyCollection<string> Published => Observed.Names;
 
@@ -42,7 +42,7 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
         }
 
         [Fact]
-        public void The_decorators_reach_the_EventSource()
+        public void The_emitters_reach_the_EventSource()
         {
             // Guards the rest of this class: every assertion below passes trivially if the sweep
             // published nothing at all.
@@ -66,19 +66,20 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
         {
             // The dimensioned overloads of EventCounterMetricTracker exist and the decorators use
             // them, so this is the assertion that keeps them from encoding a dimension into the
-            // name again.
+            // name again. It is also why the probes bake generation into the counter name instead:
+            // an EventCounter carries no dimension for one to go in.
             Assert.All(Published, name => Assert.DoesNotContain('[', name));
         }
 
 #if CMS13
         [Fact]
-        public void Every_subscribed_name_is_one_some_decorator_publishes()
+        public void Every_subscribed_name_is_one_some_emitter_publishes()
         {
             // CMS 13 / Commerce 15 only, for the same reason as the registry coverage test: it is
             // the one target where every decorator exists.
             var neverPublished = Registered
                 .Except(Published)
-                .Except(DecoratorSweep.OutOfReach)
+                .Except(EmitterSweep.OutOfReach)
                 .OrderBy(n => n)
                 .ToList();
 

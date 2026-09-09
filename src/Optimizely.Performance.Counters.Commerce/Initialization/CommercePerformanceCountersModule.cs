@@ -12,6 +12,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 #endif
 using Optimizely.Performance.Counters.Commerce.Decorators;
+using Optimizely.Performance.Counters.Core.Configuration;
+using Optimizely.Performance.Counters.Core.Diagnostics;
 using Optimizely.Performance.Counters.Core.Telemetry;
 using Optimizely.Performance.Counters.Shared;
 using Optimizely.Performance.Counters.VersionDetection;
@@ -35,6 +37,10 @@ namespace Optimizely.Performance.Counters.Commerce.Initialization
         // replayed through the host's own logger once one exists.
         private DeferredLogger<CommercePerformanceCountersModule>? _deferredLogger;
 
+        // Read in ConfigureContainer and used again in Initialize. Defaulted rather than nullable
+        // so that a module whose ConfigureContainer somehow did not run still behaves.
+        private InstrumentationOptions _options = new InstrumentationOptions();
+
         /// <summary>
         /// Registers the metric tracker and wraps the instrumented Commerce services. Runs while
         /// the container is being built, before any module initializes.
@@ -43,6 +49,19 @@ namespace Optimizely.Performance.Counters.Commerce.Initialization
         public void ConfigureContainer(ServiceConfigurationContext context)
         {
             _logger = _deferredLogger = ResolveLogger<CommercePerformanceCountersModule>(context);
+
+            _options = LoadOptions(context, _logger);
+
+            if (!_options.Enabled)
+            {
+                // One switch covers both packages: they read the same section, so a site that turns
+                // instrumentation off does not have to know which of the two it has installed.
+                _logger?.LogInformation(
+                    "Optimizely Commerce Performance Counters are switched off by configuration " +
+                    "('{SectionName}:Enabled' is false). Nothing is decorated and no probe runs.",
+                    InstrumentationOptions.SectionName);
+                return;
+            }
 
             _logger?.LogInformation(
                 "Commerce Version Detection:\n{VersionInfo}",
@@ -61,28 +80,61 @@ namespace Optimizely.Performance.Counters.Commerce.Initialization
 
             RegisterDecorators(context);
 
+#if !CMS11
+            if (_options.Logging.Enabled)
+            {
+                // Registered here, not started here. The logging factory reads its providers out of
+                // the container once, so the provider has to exist before the container is built;
+                // it stays inert until Initialize publishes a recorder for it to count into.
+                // TryAddEnumerable makes this safe next to the CMS package doing the same.
+                RegisterLogWriteRateProvider(context);
+            }
+#endif
+
             _logger?.LogInformation("Optimizely Commerce Performance Counters configured successfully");
         }
 
         /// <summary>
         /// Replays what <see cref="ConfigureContainer"/> logged, now that a container exists to
-        /// resolve the host's own logger from. No registration happens here.
+        /// resolve the host's own logger from, and starts the runtime probes. No registration
+        /// happens here.
         /// </summary>
         /// <param name="context">Initialization context supplied by the framework.</param>
+        /// <remarks>
+        /// The probes measure the process rather than Commerce, so a Commerce-only host wants them
+        /// as much as a CMS one does. On a host running both packages whichever module initializes
+        /// first starts them and the other's call is a no-op.
+        /// </remarks>
         public void Initialize(InitializationEngine context)
         {
             _logger = FlushLogger(_deferredLogger, context) ?? _logger;
             _deferredLogger = null;
 
+            if (!_options.Enabled)
+            {
+                // ConfigureContainer already said why, and it said it before the container was
+                // built, so this is where that line reaches the host's log.
+                return;
+            }
+
+            StartRuntimeProbes(context, _options.Probes, _logger);
+            StartLogWriteRate(context, _options.Logging, _logger);
+
             _logger?.LogInformation("Optimizely Commerce Performance Counters initialized");
         }
 
         /// <summary>
-        /// No-op beyond logging. The decorators are owned by the container and torn down with it.
+        /// Stops the runtime probes. The decorators need no teardown - they are owned by the
+        /// container and go with it - but the probes own threads, so they do.
         /// </summary>
         /// <param name="context">Initialization context supplied by the framework.</param>
-        public void Uninitialize(InitializationEngine context) =>
+        public void Uninitialize(InitializationEngine context)
+        {
+            RuntimeProbes.Stop();
+            LogWriteRateMonitor.Stop();
+
             _logger?.LogInformation("Optimizely Commerce Performance Counters uninitialized");
+        }
 
         private void RegisterDecorators(ServiceConfigurationContext context)
         {

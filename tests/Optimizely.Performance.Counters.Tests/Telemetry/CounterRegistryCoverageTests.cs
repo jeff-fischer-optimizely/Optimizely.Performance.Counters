@@ -7,7 +7,7 @@ using Xunit;
 namespace Optimizely.Performance.Counters.Tests.Telemetry
 {
     /// <summary>
-    /// Keeps <see cref="EventCounterRegistry"/> and the decorators from drifting apart.
+    /// Keeps <see cref="EventCounterRegistry"/> and the emitters from drifting apart.
     /// <para>
     /// The registry is what consumers point Application Insights and DataDog at. A counter emitted
     /// but not registered is invisible in production; a counter registered but never emitted is a
@@ -34,7 +34,7 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
         }
 
         [Fact]
-        public void Everything_the_decorators_emit_is_registered()
+        public void Everything_the_emitters_emit_is_registered()
         {
             var emitted = EmitEverything();
 
@@ -48,7 +48,7 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
 
 #if CMS13
         [Fact]
-        public void Everything_registered_is_emitted_by_some_decorator()
+        public void Everything_registered_is_emitted_by_some_emitter()
         {
             // CMS 13 / Commerce 15 only: it is the one target where every decorator exists, so it
             // is the only place the registry can be checked in full.
@@ -56,25 +56,25 @@ namespace Optimizely.Performance.Counters.Tests.Telemetry
 
             var neverEmitted = Registered
                 .Except(emitted)
-                .Except(DecoratorSweep.OutOfReach)
+                .Except(EmitterSweep.OutOfReach)
                 .OrderBy(n => n)
                 .ToList();
 
             Assert.True(
                 neverEmitted.Count == 0,
-                "These counters are registered but no decorator emits them, so they will chart as " +
+                "These counters are registered but nothing emits them, so they will chart as " +
                 "permanently empty: " + string.Join(", ", neverEmitted));
         }
 #endif
 
         /// <summary>
-        /// Drives every decorator available on this target framework and returns the distinct set
-        /// of counter names they produced.
+        /// Drives every decorator and probe available on this target framework and returns the
+        /// distinct set of counter names they produced.
         /// </summary>
         private static HashSet<string> EmitEverything()
         {
             var tracker = new RecordingMetricTracker();
-            DecoratorSweep.DriveEverything(tracker);
+            EmitterSweep.DriveEverything(tracker);
 
             return new HashSet<string>(tracker.Names);
         }

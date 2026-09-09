@@ -27,6 +27,19 @@
     <Compile Include="..\Shared\*.cs" LinkBase="Shared" />
   </ItemGroup>
 
+  <!-- See the matching comment in the CMS project: the settings template and the target that
+       delivers it, packed under this package's own id. -->
+  <ItemGroup>
+    <None Include="..\..\packaging\Optimizely.Performance.Counters.targets"
+          Pack="true" PackagePath="build\$(PackageId).targets" Visible="false" />
+    <None Include="..\..\packaging\install.ps1"
+          Pack="true" PackagePath="tools\install.ps1" Visible="false" />
+    <None Include="..\..\packaging\templates\*"
+          Pack="true" PackagePath="build\templates\" Visible="false" />
+    <None Include="..\..\packaging\templates\Optimizely.Instrumentation.template.config;..\..\packaging\templates\README_AFTER_INSTALL.md"
+          Pack="true" PackagePath="content\App_Data\Optimizely.Performance.Counters\" Visible="false" />
+  </ItemGroup>
+
   <!-- Common dependencies -->
   <ItemGroup>
     <!-- Logging version flows from Optimizely packages -->

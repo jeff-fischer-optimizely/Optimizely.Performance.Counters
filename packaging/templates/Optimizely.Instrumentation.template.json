@@ -1,0 +1,128 @@
+{
+  "_comment": [
+    "Optimizely.Performance.Counters - settings template for CMS 12 and CMS 13.",
+    "",
+    "Merge the 'Optimizely' block below into your site's appsettings.json. Every value shown is",
+    "the default, so a site that copies this file wholesale behaves exactly as it does with no",
+    "configuration at all - delete the lines you are not changing.",
+    "",
+    "Keys beginning with an underscore are comments and are ignored. Anything else the package",
+    "does not recognise is logged as a warning at startup, so a typo is visible rather than silent.",
+    "",
+    "This is a different section from Optimizely:PerformanceCounters, which belongs to",
+    "Optimizely.Performance.DotNetCounters. The two packages are usually installed together and",
+    "configured separately."
+  ],
+
+  "Optimizely": {
+    "Instrumentation": {
+      "_comment_Enabled": [
+        "The master switch. False and nothing is decorated, no probe starts and no counter is",
+        "registered with Application Insights - the modules log one line each and return. It is",
+        "here so that an operator suspecting this package during an incident can rule it out with",
+        "a setting rather than a deployment."
+      ],
+      "Enabled": true,
+
+      "Probes": {
+        "_comment": [
+          "The four probes measure conditions nothing publishes a counter for. Each can be turned",
+          "off on its own. GarbageCollection and Contention need .NET 6 or later and never run on",
+          "CMS 11 whatever they are set to; CacheLock finds nothing on CMS 11 for the same reason",
+          "the cascade counters are absent there."
+        ],
+
+        "ThreadPool": {
+          "Enabled": true,
+          "_comment_SampleIntervalSeconds": "Each sample is one queued work item.",
+          "SampleIntervalSeconds": 5,
+          "_comment_SampleTimeoutSeconds": "A sample that does not finish inside this is recorded as starvation.",
+          "SampleTimeoutSeconds": 10,
+          "_comment_SlowSampleThresholdMilliseconds": "Delay above which a sample is also logged.",
+          "SlowSampleThresholdMilliseconds": 100,
+          "LogsPerMinute": 4
+        },
+
+        "GarbageCollection": {
+          "Enabled": true,
+          "SampleIntervalSeconds": 5,
+          "_comment_SlowPauseThresholdMilliseconds": "Pause above which a sample is also logged.",
+          "SlowPauseThresholdMilliseconds": 200,
+          "LogsPerMinute": 4
+        },
+
+        "Contention": {
+          "Enabled": true,
+          "_comment_BurstCaptureEnabled": [
+            "False leaves the contention rate running and stops the short capture bursts that",
+            "measure how long the waits were. The rate is the free half of the probe."
+          ],
+          "BurstCaptureEnabled": true,
+          "SampleIntervalSeconds": 5,
+          "_comment_BurstTriggerContentionsPerSecond": [
+            "Contention is normal and a busy site produces a steady background rate. The default",
+            "sits well above it, so a burst means something changed."
+          ],
+          "BurstTriggerContentionsPerSecond": 500,
+          "BurstDurationSeconds": 3,
+          "BurstCooldownSeconds": 300,
+          "MaxBurstsPerHour": 6,
+          "MaxSamplesPerBurst": 20000,
+          "LogsPerMinute": 2
+        },
+
+        "CacheLock": {
+          "_comment_Enabled": [
+            "The switch for the only reflection over Optimizely internals in the package. False",
+            "loses the four Optimizely.CMS.Cache.Lock* counters and nothing else."
+          ],
+          "Enabled": true,
+          "SampleIntervalSeconds": 2,
+          "_comment_QueueDepthThreshold": "Total queue depth above which a sample is logged. Zero silences the log.",
+          "QueueDepthThreshold": 10,
+          "LogsPerMinute": 4
+        }
+      },
+
+      "Cache": {
+        "Cascade": {
+          "_comment_Enabled": [
+            "False leaves IMemoryCache undecorated, which removes the cost as well as the nine",
+            "cascade counters. Cache hit, miss and invalidation rates are measured a layer up and",
+            "are unaffected. Has no effect on CMS 11, which has no IMemoryCache under its object",
+            "cache to count at."
+          ],
+          "Enabled": true,
+          "_comment_LargeRemovalThreshold": [
+            "A counter cannot carry a cache key, so a cascade this size or larger is also written",
+            "to the log, naming the key responsible. That is the only way to find out which key is",
+            "collapsing the cache."
+          ],
+          "LargeRemovalThreshold": 1000,
+          "LogLargeRemovals": true,
+          "LargeRemovalLogsPerMinute": 10,
+          "_comment_FailureThreshold": "Consecutive failures after which the recorder switches itself off for the process.",
+          "FailureThreshold": 20
+        }
+      },
+
+      "Logging": {
+        "_comment": [
+          "The log write rate counters. Not under Probes, because this is not a probe: a probe",
+          "looks on its own thread, and this counts on whichever thread wrote the log entry.",
+          "",
+          "On CMS 12 and CMS 13 the counting is done by an ILoggerProvider named",
+          "OptimizelyLogWriteRate, which sees every write the host's logging dispatches. It counts",
+          "at the host's default minimum level; to widen what it sees without changing what any",
+          "real sink writes, set Logging:OptimizelyLogWriteRate:LogLevel:Default in the standard",
+          "ASP.NET Core logging section. On CMS 11 the same counters come from a log4net appender",
+          "instead and this switch controls both.",
+          "",
+          "False loses the three Optimizely.Runtime.Logging.* counters and nothing else. The",
+          "provider is then not registered at all, so it costs the site nothing."
+        ],
+        "Enabled": true
+      }
+    }
+  }
+}

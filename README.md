@@ -14,12 +14,26 @@ decorators, publishes the timings and rates as .NET EventCounters on an EventSou
 them automatically. The metrics land in `customMetrics` next to your existing telemetry, queryable
 in Kusto and chartable against request duration. Install, restart, no code changes.
 
+Alongside the decorators it runs a small set of **probes** — components that measure a condition
+nothing publishes, rather than reading a counter somebody else maintains. Thread pool queue
+*delay* instead of queue *length*, garbage collection *pause durations* instead of a percentage,
+lock wait *distributions* instead of a contention count, and the depth of the queue on Optimizely's
+own cache lock. It also subscribes your APM to the `Microsoft.Data.SqlClient` connection pool
+counters, because a cache problem in Optimizely becomes a connection pool problem about thirty
+seconds later and you want both series on one chart.
+
 It is the CMS-and-Commerce half of a pair.
 [Optimizely.Performance.DotNetCounters](https://github.com/jeff-fischer-optimizely/Optimizely.Performance.DotNetCounters)
-covers the runtime beneath your site — GC, thread pool, lock contention, request queue — and is a
-hard dependency here, so the two always ship together. Between them you get the process and the
-application: *the CLR is fine, your cache hit rate collapsed* is a conclusion neither one reaches
-alone.
+subscribes your APM to the stock .NET, ASP.NET, IIS and OS counters beneath your site — GC, thread
+pool, lock contention, request queue — and is a hard dependency here, so the two always ship
+together. Between them you get the process and the application: *the CLR is fine, your cache hit
+rate collapsed* is a conclusion neither one reaches alone.
+
+The division is by *origin*, not by subject. Anything the platform already publishes is that
+package's business; anything that has to be measured is this one's. So both have something to say
+about the garbage collector, and they do not overlap: DotNetCounters forwards `time-in-gc`, which
+the runtime maintains, and the GC pause probe here reports how long individual gen 2 collections
+actually stopped your threads, which nothing maintains.
 
 ## Why you'd want this
 
@@ -33,6 +47,17 @@ alone.
   and invalidation rate are not exposed by anything else. A publish storm that flushes the cache
   across a load-balanced cluster shows up here as an invalidation spike and a hit-rate cliff,
   minutes before it shows up as a support ticket.
+- **See the cascade, not just the call.** Optimizely hangs cache entries off master keys, so one
+  `Remove` can discard a whole subtree. `RemovalFanOut` is the amplification factor — count is
+  removals asked for, mean is how many entries each one actually took. It is how a site collapses
+  its own cache from a single innocuous-looking call.
+- **Catch the stall that no counter can see.** Optimizely's memory cache serialises every write
+  behind one process-wide reader/writer lock, and writers exclude readers, so during an
+  invalidation cascade the entire site can be blocked while hit rate, CPU and GC all look healthy.
+  `monitor-lock-contention-count` cannot see it either — a reader/writer lock is not a monitor.
+- **Follow it downstream.** Cache miss storm, connection pool exhaustion, thread pool starvation:
+  the cache counters, the SqlClient pool counters and the thread pool queue *delay* share one
+  timeline, so the causal chain is a single chart rather than three tabs and an assumption.
 - **Prove an upgrade or a code change.** The same counter names are emitted on V11, V12 and V13, so
   a before-and-after comparison across a CMS migration is a Kusto query rather than an argument.
 - **Nothing to write.** Auto-registers through `IConfigurableModule`. No `Startup.cs` change, no
@@ -111,6 +136,12 @@ The package publishes whether or not anything is listening. To see the numbers y
 - **`dotnet-counters`** on V12 or V13 — `dotnet-counters monitor --process-id <pid> Optimizely-Performance`.
 - **PerfView or your own `EventListener`** on V11, where `dotnet-counters` cannot attach.
 
+On V11 the SQL connection pool counters are the exception and do reach Application Insights
+automatically, because there they are Windows performance counters rather than EventCounters and
+are collected by a `PerformanceCollectorModule` this package builds and initializes itself. That
+path needs no `IServiceCollection`, which is what makes it possible where the EventCounter
+registration is not — see [SQL connection pool counters on V11](#sql-connection-pool-counters-on-v11).
+
 > **The V11 wire format is different.** `EventCounter` polling is a .NET Core construct, so the
 > `net472` build writes each measurement as a raw ETW event whose payload is `(name, value)` rather
 > than creating a named `EventCounter`. The counter *names* are identical — they arrive as the first
@@ -120,22 +151,59 @@ The package publishes whether or not anything is listening. To see the numbers y
 See [examples/](examples/) for the settings to merge into a V11, V12 or V13 site, and
 [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) for how to confirm each stage on a real one.
 
+### SQL connection pool counters on V11
+
+Eight of the twelve pool counters are collected with no configuration. The other four —
+`NumberOfActiveConnections`, `NumberOfFreeConnections`, `SoftConnectsPerSecond` and
+`SoftDisconnectsPerSecond` — are only published by ADO.NET when a trace switch says so, and they
+are the four that answer *how full is the pool*. Add the switch to `web.config`:
+
+```xml
+<system.diagnostics>
+  <switches>
+    <add name="ConnectionPoolPerformanceCounterDetail" value="4" />
+  </switches>
+</system.diagnostics>
+```
+
+`4` is `TraceLevel.Verbose`, the only value ADO.NET accepts here. Restart the application pool
+afterwards; the counters are created during provider initialization, not on demand.
+
+Without the switch those four do not fail — they read a constant zero, which on a chart is
+indistinguishable from a completely idle pool. This package reads the same switch ADO.NET does and
+collects them only when they can be believed, so nothing on the chart is a number you cannot trust.
+There is no equivalent switch on V12 or V13; the EventCounter versions are always available.
+
 ---
 
 ## What is instrumented
 
-Thirty counters, from five decorated services. This is the whole list — the package instruments a
-finite, hand-maintained set of seams rather than crawling for things to wrap.
+Sixty-two counters, from six decorated services, four probes and the host's logging pipeline. This
+is the whole list — the package instruments a finite, hand-maintained set of seams rather than
+crawling for things to wrap.
+
+### From the decorators
 
 | Prefix | Counters |
 | --- | --- |
 | `Optimizely.CMS.Content.` | `LoadTimeMs`, `LoadOperations`, `SaveTimeMs`, `SaveOperations`, `PublishTimeMs`, `PublishOperations`, `DeleteTimeMs`, `DeleteOperations`, `MoveTimeMs`, `MoveOperations`, `ItemsLoaded` |
 | `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations` |
+| `Optimizely.CMS.Cache.` *(cascade — V12/V13)* | `RemovalFanOut`, `RemoteRemovalFanOut`, `InsertFanOut`, `RemovalDurationMs`, `InsertTtlSeconds`, `EvictionsExpired`, `EvictionsCapacity`, `EvictionsReplaced`, `EvictionsTokenExpired` |
 | `Optimizely.CMS.Events.` | `EventsPerSecond`, `RemoteEventsPerSecond`, `RemoteEventFailuresPerSecond`, `AverageRemoteEventDeliveryTimeMs` *(V13 only)* |
 | `Optimizely.Commerce.Orders.` | `SaveTimeMs`, `SaveOperations`, `LoadTimeMs`, `LoadOperations`, `CreateTimeMs`, `CreateOperations`, `DeleteTimeMs`, `DeleteOperations`, `CartLineItemCount`, `CartTotal`, `CartsLoaded` |
 
 Every timed operation emits a `TimeMs` and an `Operations` counter as a pair, so a duration can
 always be read against the call count that produced it.
+
+The nine cascade counters are the ones worth dwelling on. Optimizely hangs cache entries off master
+keys, so removing one entry walks the dependency graph and discards the subtree beneath it while
+the caller sees a single `Remove`. `RemovalFanOut` measures that amplification directly: read the
+counter's own aggregates, where count is removals asked for, mean is the fan-out and max is the
+worst single cascade in the interval. `RemoteRemovalFanOut` splits out the cascades another node in
+the cluster caused, because profiling *this* instance will never explain those. `InsertFanOut` is
+the least obvious of the three — inserting a key removes the existing entry first, so writing a key
+that others depend on evicts them too. The four `Evictions*` counters carry the reason as separate
+names rather than as a dimension, for the reason given at the end of this section.
 
 The decorated services:
 
@@ -144,12 +212,101 @@ The decorated services:
 | `IContentLoader` | CMS | V11, V12, V13 |
 | `IContentRepository` | CMS | V11, V12, V13 |
 | `ISynchronizedObjectInstanceCache` | CMS | V11, V12, V13 |
+| `IMemoryCache` | CMS | V12, V13 — the layer the cascade counters are measured at. V11 caches through `HttpRuntime.Cache`, which has no such layer beneath the object cache |
 | `IEventPublisher` | CMS | V13 only — V11 and V12 raise events through the static `Event` class, which has no seam to decorate |
 | `IOrderRepository` | Commerce | V11, V12, V13 |
+
+### From the probes
+
+A probe measures something no counter source publishes. Each runs one background thread at
+below-normal priority, so on a saturated machine it yields to the work it is measuring.
+
+| Prefix | Counters | Versions |
+| --- | --- | --- |
+| `Optimizely.CMS.Cache.` | `LockWaitingWriters`, `LockWaitingReaders`, `LockCurrentReaders`, `LockWriteHeldPercent` | V12, V13 |
+| `Optimizely.Runtime.ThreadPool.` | `QueueDelayMs`, `BusyWorkerThreads`, `BusyIoThreads`, `StarvationSamples` | V11, V12, V13 |
+| `Optimizely.Runtime.GC.` | `Gen0PauseMs`, `Gen1PauseMs`, `Gen2PauseMs`, `Gen2BackgroundPauseMs`, `PauseTimePercent`, `IntervalPauseMs`, `PauseDutyCyclePercent` | V12, V13 |
+| `Optimizely.Runtime.Contention.` | `ContentionsPerSecond`, `BurstContentions`, `BurstWaitP50Ms`, `BurstWaitP95Ms`, `BurstWaitMaxMs` | V12, V13 |
+
+- **Cache lock.** Samples the queue on the `ReaderWriterLockSlim` that Optimizely's memory cache
+  serialises every write behind, without ever acquiring it — four property reads, so sampling
+  cannot add the contention it measures. `LockWaitingWriters` is the number that matters: writers
+  exclude readers, so a queue there is the whole site waiting on cache invalidation.
+  `LockWriteHeldPercent` is a duty cycle, which is what makes it comparable across sites of
+  different sizes. This is the only place the package reads an Optimizely internal; see
+  [Cache lock counters are missing](#cache-lock-counters-are-missing).
+- **Thread pool.** Queues one work item every five seconds and times how long the pool takes to
+  start it. `threadpool-queue-length` cannot substitute: a queue of ten is harmless if the pool
+  drains it instantly and fatal if it is injecting one thread per second. Dedicated thread rather
+  than a timer, because timer callbacks are dispatched on the thread pool and a timer-based probe
+  reports numbers biased towards health at exactly the moment the pool is starved.
+- **GC pause.** The four pause counters are per generation because EventCounters carry no
+  dimensions and a gen 0 pause and a gen 2 pause differ by three orders of magnitude. Blocking and
+  background gen 2 are separated because charted together an ordinary background collection looks
+  like a stall. `IntervalPauseMs` is exact rather than sampled — a delta of a cumulative runtime
+  total — and is the one to alert on; the per-generation durations are for reading the shape. It
+  needs .NET 8 or later.
+- **Contention.** `ContentionsPerSecond` runs always and is free, being a delta of a number the
+  runtime already keeps. Cross the trigger threshold and the probe opens a short capture burst that
+  records actual wait durations and reports their percentiles — the thing a contention *count* can
+  never tell you. Bursts are bounded three ways: a duration, a cooldown, and a cap per rolling hour.
+
+### From the logging pipeline
+
+| Prefix | Counters | Versions |
+| --- | --- | --- |
+| `Optimizely.Runtime.Logging.` | `WritesPerSecond`, `WarningsPerSecond`, `ErrorsPerSecond` | V11, V12, V13 |
+
+Neither a decorator nor a probe. Logging is a genuine capacity problem rather than a diagnostic
+afterthought — a site that starts writing a warning per request is spending real time formatting,
+serialising and flushing it, and the symptom presents as slow requests with nothing in the request
+telemetry to explain them. The write rate is the counter that names that, and the two severity
+counters are what turn "we are logging a lot" into "we are logging a lot of *errors*".
+
+The hook is the one place every write already passes through, which differs by major:
+
+- **V12 and V13** register an `ILoggerProvider` named `OptimizelyLogWriteRate`.
+  `EPiServer.Logging.LogManager` forwards to `Microsoft.Extensions.Logging`, so a provider sees
+  everything every real sink sees. It counts at the host's default minimum level; widen it with
+  `"Logging": { "OptimizelyLogWriteRate": { "LogLevel": { "Default": "Debug" } } }`, which changes
+  what the counter sees and not what any sink writes. The counting logger always reports
+  `IsEnabled` as false, so registering it cannot make a `logger.IsEnabled(...)` guard anywhere in
+  the site start building messages nobody writes, and it never calls the formatter — rendering is
+  most of what a log write costs and doing it twice to count it would be self-defeating.
+- **V11** adds an appender to the root logger of every configured log4net repository. log4net
+  resolves appenders by walking a logger's parent chain per event, so an appender added after
+  startup still sees everything that follows. log4net is reached entirely by reflection, with the
+  appender built as a `DispatchProxy` over `IAppender`: log4net's assembly version tracks its
+  package version, so a compile-time reference would bind to one exact identity and every site on a
+  different patch would need a binding redirect. Both V11 configurations are covered — a standalone
+  `EPiServerLog.config` and an inline `<log4net>` section in `web.config` — because the sink
+  enumerates all repositories rather than assuming the default one. Two things it does not see: a
+  logger with `additivity="false"`, which never reaches root, and a repository created after
+  initialization.
+
+Counts accumulate on the writing thread with an interlocked increment and are published once a
+minute, the same accumulate-and-flush pattern the cache counters use, because a counter write per
+log write would make this the expensive thing on the page.
+
+### Counters from elsewhere
+
+The Application Insights registration also subscribes to the twelve `Microsoft.Data.SqlClient`
+connection pool EventCounters — pooled and non-pooled connection counts, active and free
+connections, hard and soft connect/disconnect rates, pool and pool-group counts, stasis and
+reclaimed connections. Nothing needs enabling: the counters are created the first time something
+enables the event source, which is exactly what registering them does.
+
+These are not this package's counters and it does not claim them; they are here because they are
+the next question after a cache miss storm, and having to go and find them by hand is the reason
+nobody does. On V11 the same measurements are Windows performance counters under
+`.NET Data Provider for SqlServer` rather than EventCounters, and four of them need a switch — see
+[SQL connection pool counters on V11](#sql-connection-pool-counters-on-v11).
 
 Counter names carry no dimensions. An overload that could be distinguished — a load by GUID versus
 by `ContentReference` — reports under the same base name, because Application Insights matches
 EventCounter names exactly and a name with a dimension baked into it is a name nobody subscribed to.
+Where a dimension genuinely mattered it is baked into separate *names* instead: one counter per GC
+generation, one per eviction reason, one per cascade origin.
 
 ---
 
@@ -158,17 +315,23 @@ EventCounter names exactly and a name with a dimension baked into it is a name n
 ```
   InstrumentedContentLoader
   InstrumentedContentRepository
-  InstrumentedSynchronizedObjectInstanceCache   ──→  IMetricTracker
-  InstrumentedEventPublisher        (V13)                  |
-  InstrumentedOrderRepository                              v
-                                              EventCounterMetricTracker
+  InstrumentedSynchronizedObjectInstanceCache
+  InstrumentedMemoryCache -> CacheCascadeRecorder  (V12/V13)
+  InstrumentedEventPublisher        (V13)       ──→  IMetricTracker
+  InstrumentedOrderRepository                              |
                                                            |
-                                                           v
+  CacheLockProbe                    (V12/V13)              v
+  ThreadPoolQueueDelayProbe                     EventCounterMetricTracker
+  GcPauseProbe                      (V12/V13)              |
+  ContentionProbe                   (V12/V13)              v
                              OptimizelyPerformanceEventSource ("Optimizely-Performance")
                                                            |
                     +--------------------------------------+--------------------+
                     v                                      v                    v
      AI EventCounterCollectionModule                    DataDog          dotnet-counters
+                    ^
+                    |
+     Microsoft.Data.SqlClient.EventSource  (subscribed, not published, by this package)
 ```
 
 An `[InitializableModule] : IConfigurableModule` in each package runs during container
@@ -177,6 +340,21 @@ and throws if they disagree, detects the telemetry systems present, registers
 `EventCounterMetricTracker` as `IMetricTracker`, and wraps the services above using
 `context.Services.Intercept<T>()`. The Commerce module does the same and is idempotent about the
 shared parts, so installing both packages registers telemetry once.
+
+The probes start in `Initialize` rather than `ConfigureContainer`, because they are not services:
+nothing resolves them, they own their own threads, and they need a built container to get a tracker
+out of. The three runtime probes are process-wide and idempotent behind `RuntimeProbes`, so a site
+with both packages installed runs one set rather than two — two thread pool probes do not measure
+the pool twice as well, they measure it slightly worse and cost twice as much. The cache lock probe
+is owned by the CMS module alone, because it reads an Optimizely internal and has no business
+running in a Commerce-only host.
+
+The `IMemoryCache` decoration is deferred to `ConfigurationComplete`. `IMemoryCache` belongs to the
+host, not to us, and nothing guarantees it has been registered by the time this module configures;
+`ConfigurationComplete` runs after everything else has registered and registration is still open
+there, so it is the one point that cannot depend on module ordering. If the decoration fails it is
+logged as a warning and the site starts anyway — the rate counters are unaffected and only the
+cascade counters go missing.
 
 Nothing in the library listens to its own EventSource, and it does not republish the counters that
 `Optimizely.Performance.DotNetCounters` collects. Collection is entirely the host's business.
@@ -190,6 +368,16 @@ into interlocked fields and flush on a 60-second timer instead of writing per ca
 collector *reads* is on its own schedule: `EventCounterCollectionModule` polls at 60 seconds by
 default, `dotnet-counters` at one.
 
+The probes are budgeted the same way. A cache lock sample is four property reads and never acquires
+the lock, so sampling cannot itself add contention; the reflection that finds the lock runs once, at
+startup. A thread pool sample is one queued work item every five seconds — twelve a minute, enough
+for a meaningful max and standard deviation without the probe becoming load itself. A GC sample
+reads state the runtime already recorded and does not provoke a collection. The contention rate is
+a delta of a number the runtime already keeps; only a triggered burst subscribes to per-contention
+events, and it is bounded by duration, cooldown, a cap per hour and a cap on retained samples. All
+probe logging is rate-limited, so sustained trouble cannot flood the log at the moment the site can
+least afford it.
+
 ### Startup log
 
 Set `Optimizely.Performance.Counters.CMS.Initialization` and
@@ -202,13 +390,26 @@ Set `Optimizely.Performance.Counters.CMS.Initialization` and
        CMS.Core: 12.24.1
        ...
 [INFO] Telemetry Detection: Telemetry Systems: Application Insights 2.22.0.997, EventCounters
-[INFO] Registered 30 Optimizely EventCounters with Application Insights
+[INFO] Registered 74 EventCounters with Application Insights, from 2 event sources
 [INFO] Registered IMetricTracker: EventCounterMetricTracker
 [INFO] Registering CMS performance counter decorators
 [INFO] Registered decorators: IContentLoader, IContentRepository, ISynchronizedObjectInstanceCache.
        IEventPublisher is V13-only and was not registered.
+[INFO] Cache dependency cascade instrumentation installed on IMemoryCache.
 [INFO] Optimizely CMS Performance Counters configured successfully
+[INFO] Reading cache lock contention from
+       'EPiServer.Framework.Cache.Internal.MemoryObjectInstanceCache.CacheLock'.
+[INFO] Optimizely CMS Performance Counters initialized
 ```
+
+Sixty-two of those counters are this package's and twelve are SqlClient's, which is what the two
+event sources are. The probes are quiet on a healthy start: the cache lock probe logs the one line
+above naming where it found the lock, and the others log only when they cannot start or when a
+sample crosses a threshold.
+
+If the cache lock cannot be found, that line is replaced by one beginning
+`Cache lock contention will not be reported`, giving the precise reason. Nothing else is affected —
+see [Cache lock counters are missing](#cache-lock-counters-are-missing).
 
 A version mismatch throws out of `ConfigureContainer` and takes the site down at startup. That is
 deliberate: a counters package that silently instruments the wrong API surface is worse than one
@@ -313,11 +514,19 @@ So on V11 the practical menu is: poll `ContentProvider` yourself, buy an APM, or
 seams. This package is the third, and the V11 build is the same code and the same counter names as
 the V12 and V13 builds, which is the point if you are running mixed versions through a migration.
 
-One honest caveat for V11: **Application Insights registration is not implemented there yet.**
-`TelemetryStartup.Configure` needs an `IServiceCollection` and V11 configures services through
-`IServiceConfigurationProvider`. Detection runs and is logged; the counters are published to the
-EventSource and are readable with PerfView or your own `EventListener`, but nothing is subscribed to
-Application Insights automatically. See the gaps below.
+Two honest caveats for V11. **Application Insights registration of this package's own counters is
+not implemented there.** `TelemetryStartup.Configure` needs an `IServiceCollection` and V11
+configures services through `IServiceConfigurationProvider`. Detection runs and is logged; the
+counters are published to the EventSource and are readable with PerfView or your own
+`EventListener`, but nothing subscribes Application Insights to them automatically. The SQL
+connection pool counters are the exception, for the reason given
+[above](#making-the-counters-visible). See the gaps below.
+
+**And three of the four probes are V12/V13 only.** The thread pool probe runs everywhere. The GC
+pause and contention probes need runtime APIs that do not exist on .NET Framework, and the cache
+lock probe has nothing to find: V11 caches through `HttpRuntime.Cache`, which has no such lock. On
+V11 the ground those three cover is the ground Windows performance counters already cover
+adequately — which is the DotNetCounters package's job, not this one's.
 
 **V12 and V13** have a slightly better menu — `dotnet-counters` works, Application Insights
 subscription is automatic, and OpenTelemetry is a credible pipeline for everything *except* the
@@ -363,6 +572,149 @@ customMetrics
 | render timechart
 ```
 
+```kusto
+// Cascade amplification. count is removals asked for, avg is how many entries each one
+// actually discarded, max is the worst single cascade in the interval
+customMetrics
+| where name in (
+    "Optimizely.CMS.Cache.RemovalFanOut",
+    "Optimizely.CMS.Cache.RemoteRemovalFanOut",
+    "Optimizely.CMS.Cache.InsertFanOut")
+| summarize removals = sum(valueCount), meanFanOut = avg(value), worst = max(valueMax)
+    by name, bin(timestamp, 5m)
+| render timechart
+```
+
+```kusto
+// GC pauses. valueMax is the number that matters - an average pause is meaningless when
+// a single 900ms gen 2 is what the user actually felt
+customMetrics
+| where name startswith "Optimizely.Runtime.GC." and name endswith "PauseMs"
+| summarize max(valueMax) by name, bin(timestamp, 1m)
+| render timechart
+```
+
+```kusto
+// The whole cascade on one chart: mass invalidation -> cache lock queue -> miss storm ->
+// pool exhaustion -> requests waiting on threads. One bucket, so it reads as a sequence
+customMetrics
+| where name in (
+    "Optimizely.CMS.Cache.RemovalFanOut",
+    "Optimizely.CMS.Cache.LockWaitingWriters",
+    "Optimizely.CMS.Cache.MissRate",
+    "number-of-free-connections",
+    "Optimizely.Runtime.ThreadPool.QueueDelayMs")
+| summarize max(valueMax) by name, bin(timestamp, 1m)
+| render timechart
+```
+
+```kusto
+// Thread pool delay, where the max matters far more than the average: starvation is
+// bursty and a one-minute mean hides it completely
+customMetrics
+| where name == "Optimizely.Runtime.ThreadPool.QueueDelayMs"
+| summarize p50 = percentile(value, 50), p95 = percentile(value, 95), worst = max(valueMax)
+    by bin(timestamp, 1m)
+| render timechart
+```
+
+```kusto
+// Log write rate, with the two severity series against the total. The interesting
+// incidents are the ones where they diverge: a flat total with a climbing error rate is a
+// fault the site is absorbing quietly, a climbing total with a flat error rate is a debug
+// level someone left switched on
+customMetrics
+| where name startswith "Optimizely.Runtime.Logging."
+| summarize avg(value) by name, bin(timestamp, 1m)
+| render timechart
+```
+
+### Correlating a counter with the requests it affected
+
+Everything above says *what* happened and *when*. Closing the loop to *who it happened to*
+takes one more step, and the shape of that step is dictated by something worth stating
+plainly rather than working around: **the counters carry no `operation_Id`.**
+
+They cannot. An EventCounter is a process-level aggregate, and Application Insights'
+`EventCounterCollectionModule` reads it on its own collection timer — not inside any
+request, not on a request's thread, and not within its activity scope. The same is true of
+the probes at the point of measurement: a probe samples from a background thread, so even
+the moment of measurement has no request context to inherit. There is nothing to join on,
+and a query that appeared to join on one would be joining on whatever ambient activity the
+collection timer happened to pick up, which is worse than not joining at all.
+
+What replaces it is a join on time *and* `cloud_RoleInstance`. The instance is the part
+people leave out and the part that makes it work — on a multi-instance site a counter
+spike is usually one instance, and averaging it across the others is exactly how a real
+spike gets buried under healthy neighbours.
+
+```kusto
+// Step 1. Find when, and just as importantly where. Set the threshold from your own
+// baseline; 100ms is a placeholder, not a recommendation
+let counter = "Optimizely.Runtime.ThreadPool.QueueDelayMs";
+let spikeThreshold = 100;
+customMetrics
+| where name == counter
+| summarize worst = max(valueMax) by cloud_RoleInstance, bucket = bin(timestamp, 1m)
+| where worst > spikeThreshold
+| order by worst desc
+```
+
+```kusto
+// Step 2. The requests that instance served inside those windows. A one-minute bucket
+// because that is the counters' own publication interval - a finer bucket does not buy
+// resolution the source data has
+let counter = "Optimizely.Runtime.ThreadPool.QueueDelayMs";
+let spikeThreshold = 100;
+let window = 1m;
+let spikes =
+    customMetrics
+    | where name == counter
+    | summarize worst = max(valueMax) by cloud_RoleInstance, bucket = bin(timestamp, window)
+    | where worst > spikeThreshold;
+requests
+| extend bucket = bin(timestamp, window)
+| join kind=inner spikes on cloud_RoleInstance, bucket
+| summarize
+    requests = count(),
+    failed = countif(success == false),
+    p95 = percentile(duration, 95)
+    by operation_Name, cloud_RoleInstance, bucket, worst
+| order by p95 desc
+```
+
+That is a coincidence-in-a-window argument, not proof of causation, and it is worth
+reading it as one. What makes it persuasive is the comparison rather than the number: run
+the same query against quiet windows on the same instance, and an operation whose p95 only
+moves inside the spike windows is a much stronger candidate than one that is slow
+throughout.
+
+The logging counters are the exception, and the one place the loop genuinely closes to a
+request. Counters carry no `operation_Id`, but the `traces` those counters are counting
+do — Application Insights stamps them from the ambient request. So the counter tells you
+which minute went wrong, and `traces` tells you which operations produced the writes:
+
+```kusto
+// The write rate counter says WHEN the site got noisy. This says which operations were
+// doing the writing, and at what severity
+let window = 1m;
+let noisy =
+    customMetrics
+    | where name == "Optimizely.Runtime.Logging.WritesPerSecond"
+    | summarize rate = avg(value) by cloud_RoleInstance, bucket = bin(timestamp, window)
+    | where rate > 50;   // from your own baseline
+traces
+| extend bucket = bin(timestamp, window)
+| join kind=inner noisy on cloud_RoleInstance, bucket
+| join kind=leftouter (requests | project operation_Id, operation_Name) on operation_Id
+| summarize writes = count(), affectedOperations = dcount(operation_Id) by operation_Name, severityLevel
+| order by writes desc
+```
+
+Writes with no `operation_Name` are not a defect in the query. They are the site logging
+from somewhere that is not a request — startup, a scheduled job, a background thread — and
+on a site whose write rate has just doubled, that bucket is often where the answer is.
+
 ---
 
 ## Troubleshooting
@@ -385,6 +737,44 @@ populated cart to be saved or loaded.
 your traffic takes. Resolve `IContentLoader` from the site's container and confirm the concrete
 type is `InstrumentedContentLoader`.
 
+### Cache lock counters are missing
+
+The four `Optimizely.CMS.Cache.Lock*` counters read a private static field on Optimizely's
+`MemoryObjectInstanceCache`. That field is not part of any public API, so these are expected to
+lapse across some upgrades. When it happens the probe logs one `Information` line at startup
+beginning `Cache lock contention will not be reported`, naming exactly what it could not find, and
+then stops. Nothing else is affected and cache behaviour is unchanged.
+
+Common reasons, in order of likelihood:
+
+- **The site is V11.** There is no equivalent lock; V11 caches through `HttpRuntime.Cache`.
+- **A CMS version whose cache no longer serialises on a single static `ReaderWriterLockSlim`.** The
+  probe declines rather than reporting a number off some arbitrary other lock. It matches on field
+  *type* rather than name, which is what let one implementation survive Optimizely moving the type
+  from `EPiServer.Framework` to `EPiServer.Cache` and renaming the field between 12 and 13 — but
+  shape matching only goes so far.
+- **Several candidate fields and no recognisable name.** Same outcome, deliberately.
+
+### Cascade counters are missing but the rate counters work
+
+The nine `FanOut`/`Evictions*`/`Ttl` counters are measured one layer below the object cache, at
+`IMemoryCache`. If that decoration failed, the startup log carries a warning beginning
+`Could not decorate IMemoryCache`. Hit rate, invalidation rate and the lock counters are unaffected.
+On V11 these counters are absent by design — there is no `IMemoryCache` beneath the object cache.
+
+### SQL pool counters read a constant zero on V11
+
+`NumberOfActiveConnections`, `NumberOfFreeConnections` and the soft connect/disconnect rates need
+the `ConnectionPoolPerformanceCounterDetail` switch. This package omits them when it is off rather
+than charting zeroes, so seeing nothing at all means exactly that — add the switch and restart the
+application pool. See [SQL connection pool counters on V11](#sql-connection-pool-counters-on-v11).
+
+If *all* the SQL counters are missing on V11, the instance name is the likely cause. ADO.NET names
+its performance counter instance after the entry assembly and process ID by a private algorithm;
+this package reproduces it, and a mismatch produces a counter that reads as absent rather than
+erroring. Compare the path in the startup log against what Performance Monitor shows under
+`.NET Data Provider for SqlServer`.
+
 ---
 
 ## Current gaps
@@ -392,8 +782,15 @@ type is `InstrumentedContentLoader`.
 Stated plainly, because a monitoring package that overstates its coverage is worse than one that
 does not exist:
 
-- **Application Insights auto-registration on V11.** Described above.
-- **No configuration.** Counters cannot be disabled individually or collectively yet.
+- **Application Insights auto-registration on V11**, for this package's own counters. Described
+  above. The SQL connection pool counters do register there.
+- **No configuration.** Counters cannot be disabled individually or collectively, and neither the
+  probes nor the cascade instrumentation can be switched off by a site operator — the options
+  classes exist and carry sensible defaults, but nothing binds them to `appsettings.json` or
+  `web.config`. A host that needs different values has to construct the options and start the
+  probes itself. This is the largest gap on the list.
+- **Three of the four probes are V12/V13 only.** GC pause and contention need .NET 6 or later;
+  `IntervalPauseMs` needs .NET 8. The cache lock probe has nothing to find on V11.
 - **Commerce is `IOrderRepository` only.** Pricing, inventory, promotions and payments are not
   instrumented.
 - **No search counters.** Neither Find (V11/V12) nor Graph (V13).
@@ -407,7 +804,7 @@ does not exist:
 | | |
 | --- | --- |
 | [src/](src/) | The three packages, plus `src/Shared` for code that touches EPiServer types from both |
-| [tests/](tests/) | 116 tests across net472, net8.0 and net10.0 — container registration, published counter names, and that the emitted set matches the subscribed set |
+| [tests/](tests/) | 153 tests, run on net472, net6.0, net8.0, net9.0 and net10.0 — container registration, published counter names, that the emitted set matches the subscribed set, probe lifecycle and emission, and graceful degradation of the cache lock reflection against every shape a future CMS could present |
 | [examples/](examples/) | Per-version settings, and `verify-package-install`, which installs the built packages from a local feed and asserts they bind and detect the right major. Builds on all six target frameworks; runs on whichever runtimes are installed |
 | [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) | Five-stage verification on a real site |
 | [ARCHITECTURE.md](ARCHITECTURE.md), [TELEMETRY_ARCHITECTURE.md](TELEMETRY_ARCHITECTURE.md) | Design notes |

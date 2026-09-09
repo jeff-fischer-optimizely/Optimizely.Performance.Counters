@@ -2,10 +2,19 @@
 <!--
   Lines to merge into a CMS 11 site's web.config. Not a drop-in file.
 
-  Nothing here is needed by Optimizely.Performance.Counters.CMS itself - the initialization module is
-  discovered automatically and reads no configuration. This is only the Application Insights wiring,
-  and see the caveat in README.md: the AI subscription is not implemented on V11 yet, so the counters
-  reach the Optimizely-Performance EventSource but not the AI EventCounterCollectionModule.
+  Nothing here is required by Optimizely.Performance.Counters.CMS - the initialization module is
+  discovered automatically and runs correctly with none of it. This is the Application Insights
+  wiring, plus one optional switch that changes what ADO.NET publishes.
+
+  The package does read settings, from Optimizely:Instrumentation:* keys in appSettings, but every
+  one of them has a default and none is needed to run. The complete set is written to
+  App_Data\Optimizely.Performance.Counters\Optimizely.Instrumentation.template.config on install;
+  copy across only what you want to change. The one worth knowing is in the appSettings block
+  below, commented out.
+
+  See the caveat in README.md: the AI subscription for this package's own counters is not implemented
+  on V11, so they reach the Optimizely-Performance EventSource but not the AI
+  EventCounterCollectionModule. The SQL connection pool counters are the exception and do reach AI.
 -->
 <configuration>
 
@@ -13,9 +22,32 @@
     <!-- Preferred. Connection strings replaced bare instrumentation keys in AI 2.x. -->
     <add key="APPLICATIONINSIGHTS_CONNECTION_STRING"
          value="InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://REGION.in.applicationinsights.azure.com/" />
+
+    <!--
+      Switches the whole package off: nothing is decorated, no probe starts, no appender is added to
+      log4net, and the only trace left is one line in the log saying so. Here so that ruling this
+      package out during an incident is a setting rather than a deployment.
+    -->
+    <!-- <add key="Optimizely:Instrumentation:Enabled" value="false" /> -->
   </appSettings>
 
   <system.diagnostics>
+    <!--
+      Optional, and the only setting here that changes what is collected rather than where it goes.
+
+      ADO.NET publishes NumberOfActiveConnections, NumberOfFreeConnections, SoftConnectsPerSecond and
+      SoftDisconnectsPerSecond only when this switch is Verbose - the four that answer "how full is
+      the pool". Without it they do not error; they read a constant zero, which on a chart looks
+      exactly like an idle pool. This package reads the same switch and collects them only when it is
+      on, so a missing series means "not collected" rather than "nothing happening".
+
+      4 is TraceLevel.Verbose, the only value ADO.NET accepts. Restart the application pool after
+      changing it: the counters are created during provider initialization, not on demand.
+    -->
+    <switches>
+      <add name="ConnectionPoolPerformanceCounterDetail" value="4" />
+    </switches>
+
     <!--
       Turn this on while you are confirming the counters work, then take it back out. The module logs
       which telemetry systems it detected, every decorator it registered, and the detected versus

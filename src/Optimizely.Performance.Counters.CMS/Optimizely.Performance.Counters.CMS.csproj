@@ -32,6 +32,30 @@
     <Compile Include="..\Shared\*.cs" LinkBase="Shared" />
   </ItemGroup>
 
+  <!--
+    Packaging: the settings template and the target that delivers it. Shared with the Commerce
+    package, which ships the same files under its own package id - see packaging\ at the repository
+    root for what each one is and why.
+
+    The targets file is packed under $(PackageId) because that is the only name NuGet imports
+    automatically. Everything else it needs sits beside it in build\templates\ and is read from
+    there by the target; nothing under build\ other than the .targets file is imported.
+
+    content\ is for packages.config, so only the V11 template goes in it - a site using
+    packages.config is on .NET Framework by definition, and shipping the JSON template there would
+    put a file in the project that version cannot read.
+  -->
+  <ItemGroup>
+    <None Include="..\..\packaging\Optimizely.Performance.Counters.targets"
+          Pack="true" PackagePath="build\$(PackageId).targets" Visible="false" />
+    <None Include="..\..\packaging\install.ps1"
+          Pack="true" PackagePath="tools\install.ps1" Visible="false" />
+    <None Include="..\..\packaging\templates\*"
+          Pack="true" PackagePath="build\templates\" Visible="false" />
+    <None Include="..\..\packaging\templates\Optimizely.Instrumentation.template.config;..\..\packaging\templates\README_AFTER_INSTALL.md"
+          Pack="true" PackagePath="content\App_Data\Optimizely.Performance.Counters\" Visible="false" />
+  </ItemGroup>
+
   <!-- Common dependencies -->
   <ItemGroup>
     <!-- Logging version flows from Optimizely packages -->
@@ -56,12 +80,24 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'net6.0' Or '$(TargetFramework)' == 'net7.0' Or '$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV12Version)" PrivateAssets="compile" />
     <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV12Version)" PrivateAssets="compile" />
+    <!--
+      Stated explicitly. EPiServer.Framework 12.10.0 drags in Caching.Abstractions 1.0.0, whose
+      ICacheEntry has no Size member, but a CMS 12 site runs against the ASP.NET Core shared
+      framework copy, which does. Compiling InstrumentedCacheEntry against 1.0.0 would leave a
+      member unimplemented at runtime and the type would fail to load.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="6.0.0" />
   </ItemGroup>
 
   <!-- .NET 10+ (V13 ONLY) -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
     <PackageReference Include="EPiServer.CMS.Core" Version="$(OptimizelyV13Version)" PrivateAssets="compile" />
     <PackageReference Include="EPiServer.Framework" Version="$(OptimizelyV13Version)" PrivateAssets="compile" />
+    <!--
+      No Caching.Abstractions pin here, unlike the V12 group. EPiServer.CMS.Core 13.0.2 already
+      requires 10.0.2, so restoring the version InstrumentedCacheEntry needs happens on its own, and
+      an explicit floor would only be one more number to bump behind Optimizely's.
+    -->
   </ItemGroup>
 
 </Project>

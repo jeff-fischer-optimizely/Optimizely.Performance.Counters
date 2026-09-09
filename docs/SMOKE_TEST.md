@@ -3,7 +3,7 @@
 Confirming, on a real site, that the packages install, that the initialization module fires, and
 that counters reach `dotnet-counters` and Application Insights Live Metrics.
 
-Stage 1 needs nothing. Stages 2 to 5 need a licensed Optimizely site.
+Stage 1 needs nothing. Stages 2 to 6 need a licensed Optimizely site.
 
 ---
 
@@ -20,7 +20,7 @@ Expected:
 Target framework      : net10.0
 EventSource name      : Optimizely-Performance
 Compiled for          : V13
-Registered counters   : 30
+Registered counters   : 62
 EventSource state     : healthy
 CMS module            : Optimizely.Performance.Counters.CMS loaded
 Commerce module       : Optimizely.Performance.Counters.Commerce loaded
@@ -89,19 +89,38 @@ Install into the site and set the two module loggers to `Information` - see the 
 or `web.config.snippet.xml` in the matching [examples](../examples/) folder. Start the site and read
 the startup log.
 
-Four lines matter, in this order:
+Six lines matter, in this order:
 
 1. **Version detection.** `Detected Version` must equal `Expected Version`. A mismatch throws out of
    `ConfigureContainer` and takes the site down at startup, so if the site is running at all this
    one passed.
-2. **Telemetry detection.** Either `Registered 30 Optimizely EventCounters with Application Insights`,
-   or the "no telemetry system detected" line with the `dotnet-counters` command in it. On V11,
-   expect `V11 AI registration not yet implemented` instead - that is a known gap.
+2. **Telemetry detection.** Either
+   `Registered 74 EventCounters with Application Insights, from 2 event sources`, or the "no
+   telemetry system detected" line with the `dotnet-counters` command in it. Sixty-two of those are
+   this package's and twelve are SqlClient's.
+
+   On V11 expect two different lines instead: `Registered 8 SQL connection pool performance counters
+   with Application Insights (detail counters off)` - or `12` and `enabled` if the
+   `ConnectionPoolPerformanceCounterDetail` switch is set - followed by the line explaining that V11
+   has no `IServiceCollection` and giving the EventSource name to read directly. That split is a
+   known gap, not a failure.
 3. **`Registered IMetricTracker: EventCounterMetricTracker`.**
 4. **The decorator list.** V11 and V12 name three; V13 also names `IEventPublisher`.
+5. **`Cache dependency cascade instrumentation installed on IMemoryCache.`** V12 and V13 only. A
+   warning beginning `Could not decorate IMemoryCache` here means the nine cascade counters will
+   read zero; everything else is unaffected and the site starts either way.
+6. **`Reading cache lock contention from '...MemoryObjectInstanceCache.CacheLock'.`** V12 and V13
+   only, and logged from `Initialize` rather than `ConfigureContainer`, so it comes after
+   `configured successfully`. A line beginning `Cache lock contention will not be reported` instead
+   means the four lock counters will be absent - expected on V11, and an ordinary outcome of an
+   upgrade elsewhere.
 
 If none of these appear, the module never ran and nothing downstream will work. Check that the
 package is actually in the site's `bin`, not merely referenced.
+
+The probes log nothing else on a healthy start. Their remaining output is rate-limited warnings
+when a sample crosses a threshold, which is what you want to see under load in Stage 3 and not
+before.
 
 ---
 
@@ -121,9 +140,9 @@ Then drive some traffic - load a page, edit and publish content, add something t
 Expected: the counters below appear and move. Counters are polled on an interval, so allow a few
 seconds.
 
-All thirty are listed from the moment the EventSource is constructed, whether or not any traffic has
-reached them yet, so a counter sitting at zero means the decorator that owns it has not been hit -
-not that anything is broken. They are created up front deliberately: an EventCounter is polled
+All sixty-two are listed from the moment the EventSource is constructed, whether or not any traffic
+has reached them yet, so a counter sitting at zero means the decorator that owns it has not been
+hit - not that anything is broken. They are created up front deliberately: an EventCounter is polled
 through a group that arms its timer when the collector attaches, and the group does not exist until
 the first counter does, so counters created lazily on first use were invisible to any collector that
 attached before them. That is the normal order on a site, which is why `dotnet-counters` and
@@ -133,22 +152,58 @@ Application Insights used to show nothing at all here.
 | --- | --- |
 | `Optimizely.CMS.Content.` | `LoadTimeMs`, `LoadOperations`, `SaveTimeMs`, `SaveOperations`, `PublishTimeMs`, `PublishOperations`, `DeleteTimeMs`, `DeleteOperations`, `MoveTimeMs`, `MoveOperations`, `ItemsLoaded` |
 | `Optimizely.CMS.Cache.` | `HitRate`, `MissRate`, `InvalidationsPerSecond`, `Operations` |
+| `Optimizely.CMS.Cache.` *(cascade)* | `RemovalFanOut`, `RemoteRemovalFanOut`, `InsertFanOut`, `RemovalDurationMs`, `InsertTtlSeconds`, `EvictionsExpired`, `EvictionsCapacity`, `EvictionsReplaced`, `EvictionsTokenExpired` |
+| `Optimizely.CMS.Cache.` *(lock probe)* | `LockWaitingWriters`, `LockWaitingReaders`, `LockCurrentReaders`, `LockWriteHeldPercent` |
 | `Optimizely.CMS.Events.` | `EventsPerSecond`, `RemoteEventsPerSecond`, `RemoteEventFailuresPerSecond`, `AverageRemoteEventDeliveryTimeMs` *(V13 only)* |
+| `Optimizely.Runtime.ThreadPool.` | `QueueDelayMs`, `BusyWorkerThreads`, `BusyIoThreads`, `StarvationSamples` |
+| `Optimizely.Runtime.GC.` | `Gen0PauseMs`, `Gen1PauseMs`, `Gen2PauseMs`, `Gen2BackgroundPauseMs`, `PauseTimePercent`, `IntervalPauseMs`, `PauseDutyCyclePercent` |
+| `Optimizely.Runtime.Contention.` | `ContentionsPerSecond`, `BurstContentions`, `BurstWaitP50Ms`, `BurstWaitP95Ms`, `BurstWaitMaxMs` |
+| `Optimizely.Runtime.Logging.` | `WritesPerSecond`, `WarningsPerSecond`, `ErrorsPerSecond` |
 | `Optimizely.Commerce.Orders.` | `SaveTimeMs`, `SaveOperations`, `LoadTimeMs`, `LoadOperations`, `CreateTimeMs`, `CreateOperations`, `DeleteTimeMs`, `DeleteOperations`, `CartLineItemCount`, `CartTotal`, `CartsLoaded` |
 
-Thirty in total. `Optimizely.CMS.Events.*` needs V13; the `Optimizely.Commerce.Orders.*` counters
+Sixty-two in total. `Optimizely.CMS.Events.*` needs V13; the `Optimizely.Commerce.Orders.*` counters
 need the Commerce package.
+
+The probe counters behave differently from the decorator counters and are worth checking separately,
+because they move without any traffic at all:
+
+- **`Optimizely.Runtime.ThreadPool.*`** should be populated within about five seconds of startup and
+  keep moving on an idle site. `QueueDelayMs` under a millisecond is healthy. If these are flat zero
+  rather than small, the probe did not start - look for a warning naming it in the startup log.
+- **`Optimizely.Runtime.GC.*`** need a collection to have happened. On an idle site that can take a
+  while; `GC.Collect()` from a diagnostic endpoint, or just driving traffic, is the quick way.
+  `IntervalPauseMs` requires .NET 8 or later and stays zero below it.
+- **`Optimizely.Runtime.Contention.ContentionsPerSecond`** moves on any site under load. The four
+  `Burst*` counters only move when the rate crosses the trigger threshold, so on a healthy site they
+  are expected to be zero. To see them, contend a lock deliberately.
+- **`Optimizely.Runtime.Logging.*`** move on any site that logs. `WritesPerSecond` flat at zero on a
+  site you know is writing to a log means the sink did not attach: on V12 and V13 look for the
+  `OptimizelyLogWriteRate` provider being registered, and on V11 for a startup line saying log4net
+  was not loaded. Note that V12 and V13 count at the host's default minimum level, so raising it -
+  `"Logging": { "OptimizelyLogWriteRate": { "LogLevel": { "Default": "Debug" } } }` - widens what the
+  counter sees without changing what any real sink writes.
+- **`Optimizely.CMS.Cache.Lock*`** need the lock to have been found - see Stage 2, line 6. Publish
+  content to make `LockWaitingWriters` move; on an idle site all four are legitimately zero.
+- **The nine cascade counters** need an invalidation with dependents. Publishing a page that others
+  reference is the reliable way; `RemovalFanOut` should then report a mean above 1.
 
 Nothing at all here, with Stage 2 passing, means the decorators registered but are not on the path
 the traffic took. Resolve `IContentLoader` from the site's container and check its concrete type is
 `InstrumentedContentLoader`.
 
+The twelve `Microsoft.Data.SqlClient` pool counters are not on this source. To see them:
+
+```
+dotnet-counters monitor --process-id <pid> Microsoft.Data.SqlClient.EventSource
+```
+
 ---
 
 ## Stage 4 - counters in Application Insights Live Metrics (V12 / V13)
 
-Not available on V11 - see the gap noted in Stage 2. Needs the 2.x Application Insights SDK; see the
-note on 3.x under Known gaps.
+Not available on V11 for this package's own counters - see the gap noted in Stage 2. The SQL
+connection pool counters *are* available on V11 and have their own stage below. Needs the 2.x
+Application Insights SDK; see the note on 3.x under Known gaps.
 
 The counters are registered with `EventCounterCollectionModule` by reflection, and everything up to
 the point Azure gets involved is covered by `ApplicationInsightsRegistrationTests` - so if this stage
@@ -177,7 +232,54 @@ a sampled-away counter is indistinguishable from an uncollected one.
 
 ---
 
-## Stage 5 - both packages side by side
+## Stage 5 - SQL connection pool counters (V11)
+
+The one thing that does reach Application Insights automatically on V11, because there the pool
+counters are Windows performance counters rather than EventCounters and are collected through a
+`PerformanceCollectorModule` this package builds and initializes against
+`TelemetryConfiguration.Active` - no `IServiceCollection` required.
+
+1. Confirm the category exists on the machine at all. In PowerShell:
+
+   ```powershell
+   Get-Counter -ListSet '.NET Data Provider for SqlServer' | Select-Object -ExpandProperty Counter
+   ```
+
+   Fourteen paths should come back. If the category is absent, ADO.NET has never initialized its
+   counters on this machine and nothing downstream can work.
+
+2. Read the startup log line from Stage 2. It reports how many counters were registered and whether
+   the detail counters are on: `8` and `off` without the switch, `12` and `enabled` with it.
+
+3. Drive traffic that opens connections, then look in Application Insights under `customMetrics` for
+   the reported names - `SQL Pooled Connections`, `SQL Hard Connects/Sec` and the rest. They are
+   charted under those names rather than under the raw counter paths.
+
+4. To get the four utilisation counters, add the switch and restart the application pool:
+
+   ```xml
+   <system.diagnostics>
+     <switches>
+       <add name="ConnectionPoolPerformanceCounterDetail" value="4" />
+     </switches>
+   </system.diagnostics>
+   ```
+
+   `4` is `TraceLevel.Verbose`, the only value ADO.NET accepts. Without it those four read a constant
+   zero rather than failing, which is why this package omits them instead of charting a number it
+   cannot vouch for.
+
+Nothing here at all, with the category present, points at the instance name. ADO.NET names its
+counter instance after the entry assembly and process ID by a private algorithm that this package
+reproduces; a mismatch reads as an absent counter rather than an error. Compare the path in the log
+against what Performance Monitor shows under the category.
+
+`SqlClientWindowsCounterTests` checks the requested set against the live category on every net472
+test run, so a drift in the counter names themselves fails the build rather than this stage.
+
+---
+
+## Stage 6 - both packages side by side
 
 On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
 
@@ -186,13 +288,22 @@ On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
   counters the first already asked Application Insights for, so nothing is collected or billed
   twice. `ApplicationInsightsRegistrationTests` covers this without a site.
 - `Optimizely.CMS.*` and `Optimizely.Commerce.*` counters both appear, from one EventSource.
+- **The runtime probes run once, not twice.** Both modules call `RuntimeProbes.Start` from
+  `Initialize`; whichever runs first wins and the other is a no-op. Two thread pool probes would not
+  measure the pool twice as well, they would measure it slightly worse. The give-away if this ever
+  broke is `Optimizely.Runtime.ThreadPool.QueueDelayMs` reporting roughly twice the sample count.
+- **The cache lock probe runs only from the CMS module**, so a Commerce-only host logs nothing about
+  it at all - not even the "will not be reported" line.
 
 ---
 
 ## Known gaps
 
-- **Application Insights on V11.** `TelemetryStartup.Configure` needs an `IServiceCollection`, and
-  V11 supplies `IServiceConfigurationProvider`. Detection runs and is logged; nothing is subscribed.
+- **Application Insights on V11, for this package's own counters.** `TelemetryStartup.Configure`
+  needs an `IServiceCollection`, and V11 supplies `IServiceConfigurationProvider`. Detection runs and
+  is logged; the counters are published to the EventSource but nothing subscribes to them. The SQL
+  connection pool counters are collected on V11 - see Stage 5 - because that path goes through
+  `TelemetryConfiguration.Active` rather than the container.
 - **Application Insights 3.x.** Only the 2.x SDK is supported. 3.0 re-based the SDK on
   OpenTelemetry and removed `EventCounterCollectionModule`, `ConfigureTelemetryModule` and the
   telemetry-module concept the registration is built on, so on a site running 3.x nothing is
@@ -200,6 +311,15 @@ On a Commerce site, install both and repeat Stages 2 to 4. Specifically confirm:
   still resolves, so detection reports Application Insights as present. Collecting EventCounters
   under 3.x means OpenTelemetry's own EventCounters instrumentation, which is a feature rather than
   a version bump.
-- **No configuration system.** Counters cannot be turned off individually, or at all, yet.
+- **No configuration system.** Counters cannot be turned off individually, or at all, yet, and
+  neither the probes nor the cascade instrumentation can be reconfigured by a site operator. The
+  options classes exist with sensible defaults; nothing binds them to `appsettings.json` or
+  `web.config`.
+- **Three of the four probes are V12/V13 only.** GC pause and contention need runtime APIs that
+  .NET Framework does not have, and the cache lock probe has nothing to find on V11.
+  `Optimizely.Runtime.GC.IntervalPauseMs` additionally needs .NET 8 or later.
 - **`CartLineItemCount` and `CartTotal`** need a populated cart, so they only move once a real
   Commerce cart is saved or loaded.
+- **The `Burst*` contention counters and the cache lock counters are zero on a healthy site.**
+  That is correct behaviour, but it makes them hard to smoke test - see the notes in Stage 3 for
+  how to provoke each one.

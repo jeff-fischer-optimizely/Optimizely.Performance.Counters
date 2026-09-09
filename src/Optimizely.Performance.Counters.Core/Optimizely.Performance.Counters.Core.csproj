@@ -32,13 +32,20 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(ExtensionsVersion)" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(ExtensionsVersion)" />
+    <!--
+      Abstractions only, and only for IConfiguration itself. InstrumentationConfiguration binds by
+      hand rather than through Microsoft.Extensions.Configuration.Binder, because the binder cannot
+      be used on net472 - there is no IConfiguration on a V11 site to bind from - and because it
+      ignores unrecognised keys, which is the one thing a settings file most needs to be told about.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="$(ExtensionsVersion)" />
     <PackageReference Include="Optimizely.Performance.DotNetCounters" Version="1.0.0" />
   </ItemGroup>
 
   <!--
     net10.0 only, and none of it used by this assembly. Optimizely.Performance.DotNetCounters 1.0.0
-    carries a downgrade inside its own graph on this target framework: it names the four packages
-    below at 10.0.0 directly, while the EPiServer.CMS.Core 13.0.0 it also depends on requires 10.0.2.
+    carries a downgrade inside its own graph on this target framework: it names the Microsoft.Extensions
+    packages at 10.0.0 directly, while the EPiServer.CMS.Core 13.0.0 it also depends on requires 10.0.2.
     Nearest-wins picks 10.0.0, and NU1605 is an error, so Core cannot restore in Release at all -
     dotnet pack fails before it builds anything.
 
@@ -47,13 +54,22 @@
     lifts the floor to the one CMS 13 actually needs. Remove it once DotNetCounters raises its own.
   -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="$(ExtensionsVersion)" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="$(ExtensionsVersion)" />
   </ItemGroup>
 
-  <!-- .NET Framework - EventSource/EventCounter support -->
+  <!-- .NET Framework - EventSource/EventCounter support, and the configuration V11 actually has -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
     <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="8.0.0" />
+    <!-- ConfigurationManager.AppSettings, which is where InstrumentationConfiguration reads the
+         settings from on a V11 site. -->
+    <Reference Include="System.Configuration" />
+    <!--
+      Only for Log4NetWriteRateSink, which implements log4net's IAppender at runtime rather than
+      at compile time. .NET Framework has no DispatchProxy of its own - it shipped with .NET Core -
+      so on this one target framework it comes from a package. The .NET builds have it in the
+      shared framework and must not reference the package, which is why this is not global.
+    -->
+    <PackageReference Include="System.Reflection.DispatchProxy" Version="4.7.1" />
   </ItemGroup>
 
   <!--

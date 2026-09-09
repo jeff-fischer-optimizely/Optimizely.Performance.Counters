@@ -62,6 +62,15 @@
     <!-- V11 has no IServiceCollection. Its container is StructureMap, and the container tests
          build a real one so Intercept is exercised the way a V11 site exercises it. -->
     <PackageReference Include="EPiServer.ServiceLocation.StructureMap" Version="2.0.3" />
+    <!-- Referenced by the tests only, and for the same reason Application Insights is below: Core
+         reaches log4net purely by reflection and must keep doing so, because log4net's assembly
+         version tracks its package version and a compile-time reference would bind Core to one
+         exact identity. Only a real log4net can tell whether that reflection still binds.
+
+         2.0.8 is the floor of the range EPiServer.Logging.Log4Net 2.2.2 depends on, so this is the
+         oldest log4net a V11 site can be running - the version the reflection has to work against
+         if it is to work at all. -->
+    <PackageReference Include="log4net" Version="2.0.8" />
   </ItemGroup>
 
   <!-- .NET 6-9 (V12 / Commerce 14). One Commerce version across the band, mirroring the Commerce

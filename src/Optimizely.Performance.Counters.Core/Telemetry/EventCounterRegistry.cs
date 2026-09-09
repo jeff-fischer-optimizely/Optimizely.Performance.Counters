@@ -52,6 +52,36 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             names.Add(CmsCache.InvalidationsPerSecond);
             names.Add(CmsCache.Operations);
 
+            // CMS - Cache dependency cascade, from InstrumentedSynchronizedObjectInstanceCache and
+            // InstrumentedMemoryCache. V12 and V13 only: the measurement counts entries as they
+            // reach IMemoryCache.Remove, and CMS 11 caches through System.Web instead, so there is
+            // no IMemoryCache underneath it to count at. Registered on every version anyway, on the
+            // same reasoning as the V13-only event counters below.
+            names.Add(CmsCache.RemovalFanOut);
+            names.Add(CmsCache.RemoteRemovalFanOut);
+            names.Add(CmsCache.InsertFanOut);
+            names.Add(CmsCache.RemovalDurationMs);
+            names.Add(CmsCache.InsertTtlSeconds);
+
+            names.Add(CmsCache.EvictionsExpired);
+            names.Add(CmsCache.EvictionsCapacity);
+            names.Add(CmsCache.EvictionsReplaced);
+            names.Add(CmsCache.EvictionsTokenExpired);
+
+            // CMS - Cache lock, from CacheLockProbe. Absent rather than zero when the probe cannot
+            // find the lock, which is a thing that can happen across an Optimizely upgrade; the
+            // names are registered regardless, on the same reasoning as the V13-only event
+            // counters above.
+            //
+            // Never populated on V11 in particular: CMS 11 has no MemoryObjectInstanceCache and
+            // caches through System.Web instead, so there is no process-wide reader/writer lock for
+            // anything to queue on. That is a real difference in how the two versions cache rather
+            // than a missing feature, and it is asserted in CacheLockLocatorTests.
+            names.Add(CmsCache.LockWaitingWriters);
+            names.Add(CmsCache.LockWaitingReaders);
+            names.Add(CmsCache.LockCurrentReaders);
+            names.Add(CmsCache.LockWriteHeldPercent);
+
             // CMS - Events, from InstrumentedEventPublisher. CMS 13 only; versions 11 and 12 raise
             // events through a static class with no seam to decorate. Registering them everywhere
             // is harmless - Application Insights simply never sees a value on the older versions.
@@ -71,6 +101,38 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
             names.Add(CommerceOrders.CartsLoaded);
 
             // TODO: Commerce - Pricing, Inventory, Promotions
+
+            // Runtime - measured by the Core probes rather than read from a counter source. These
+            // describe the process, not Optimizely, so they are published on a CMS site and a
+            // Commerce site alike.
+            names.Add(Runtime.ThreadPool.QueueDelayMs);
+            names.Add(Runtime.ThreadPool.BusyWorkerThreads);
+            names.Add(Runtime.ThreadPool.BusyIoThreads);
+            names.Add(Runtime.ThreadPool.StarvationSamples);
+
+            names.Add(Runtime.GarbageCollection.Gen0PauseMs);
+            names.Add(Runtime.GarbageCollection.Gen1PauseMs);
+            names.Add(Runtime.GarbageCollection.Gen2PauseMs);
+            names.Add(Runtime.GarbageCollection.Gen2BackgroundPauseMs);
+            names.Add(Runtime.GarbageCollection.PauseTimePercent);
+
+            // Registered on every target framework though only .NET 8 and later can produce them;
+            // an unfilled counter costs a name in the registry and nothing else.
+            names.Add(Runtime.GarbageCollection.IntervalPauseMs);
+            names.Add(Runtime.GarbageCollection.PauseDutyCyclePercent);
+
+            names.Add(Runtime.Contention.ContentionsPerSecond);
+            names.Add(Runtime.Contention.BurstContentions);
+            names.Add(Runtime.Contention.BurstWaitP50Ms);
+            names.Add(Runtime.Contention.BurstWaitP95Ms);
+            names.Add(Runtime.Contention.BurstWaitMaxMs);
+
+            // Runtime - logging, from LogWriteRateRecorder. Fed by an ILoggerProvider on V12 and
+            // V13 and by a log4net appender on V11, so unlike the cache and event counters above
+            // these are populated on every version.
+            names.Add(Runtime.Logging.WritesPerSecond);
+            names.Add(Runtime.Logging.WarningsPerSecond);
+            names.Add(Runtime.Logging.ErrorsPerSecond);
 
             return names;
         }
