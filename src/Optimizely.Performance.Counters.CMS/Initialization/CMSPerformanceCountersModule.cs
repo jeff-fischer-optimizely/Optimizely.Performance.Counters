@@ -16,6 +16,7 @@ using Microsoft.Extensions.Logging;
 using Optimizely.Performance.Counters.CMS.Decorators;
 using Optimizely.Performance.Counters.CMS.Diagnostics;
 using Optimizely.Performance.Counters.Core.Configuration;
+using Optimizely.Performance.Counters.Core.Deployment;
 using Optimizely.Performance.Counters.Core.Diagnostics;
 using Optimizely.Performance.Counters.Core.Http;
 using Optimizely.Performance.Counters.Core.Telemetry;
@@ -87,9 +88,13 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
                 requiredAssembly: "EPiServer.CMS.Core",
                 _logger);
 
-            ConfigureTelemetry(context, _logger);
-            RegisterMetricTracker(context);
-            _logger?.LogInformation("Registered IMetricTracker: EventCounterMetricTracker");
+            ConfigureTelemetry(context, _logger, _options.Meter);
+
+            // Registered before the log line, not inside it. A null-conditional call evaluates
+            // nothing to its right, so `_logger?.LogInformation(..., RegisterMetricTracker(...))`
+            // silently skips the registration on any host where the logger could not be resolved.
+            var tracker = RegisterMetricTracker(context, _options.Meter);
+            _logger?.LogInformation("Registered IMetricTracker: {Tracker}", tracker);
 
             RegisterDecorators(context);
 
@@ -153,6 +158,7 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
             StartCacheLockProbe(context);
             StartLogWriteRate(context, _options.Logging, _logger);
             StartHttpCacheability(context, _options.Http, _logger);
+            StartDeploymentTracking(context, _options.Deployment, _logger);
 
             _logger?.LogInformation("Optimizely CMS Performance Counters initialized");
         }
@@ -167,6 +173,7 @@ namespace Optimizely.Performance.Counters.CMS.Initialization
             RuntimeProbes.Stop();
             LogWriteRateMonitor.Stop();
             HttpCacheabilityMonitor.Stop();
+            DeploymentTracker.Stop();
 
             _cacheLockProbe?.Dispose();
             _cacheLockProbe = null;

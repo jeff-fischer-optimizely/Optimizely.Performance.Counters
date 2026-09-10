@@ -27,7 +27,13 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         /// Application Insights through a collector built here rather than through the container.
         /// </param>
         /// <param name="logger">Log sink; may be null during container configuration.</param>
-        public static void Configure(IServiceCollection? services, ILogger? logger)
+        /// <param name="meterEnabled">
+        /// Whether the counters are also being published to a meter, so the log can say so. Purely
+        /// informational - the meter is created by <c>MeterMetricTracker</c>, not here, and that
+        /// type does not exist on .NET Framework.
+        /// </param>
+        public static void Configure(
+            IServiceCollection? services, ILogger? logger, bool meterEnabled = true)
         {
             var telemetryInfo = ApplicationInsightsBridge.DetectTelemetrySystems();
             logger?.LogInformation("Telemetry Detection: {TelemetryInfo}", telemetryInfo);
@@ -85,6 +91,47 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
                     CounterNames.EventSourceName,
                     CounterNames.EventSourceName);
             }
+
+            ReportMeter(logger, meterEnabled);
+        }
+
+        /// <remarks>
+        /// Said unconditionally, whatever detection found, because the meter is the path that works
+        /// where detection finds nothing. Application Insights SDK 3.x, <c>UseAzureMonitor()</c> and
+        /// plain OpenTelemetry all leave <see cref="ApplicationInsightsBridge"/> reporting no
+        /// EventCounter collector - correctly, there is none - and an operator reading that line has
+        /// no way to know their counters are still reachable unless something tells them how.
+        /// </remarks>
+        private static void ReportMeter(ILogger? logger, bool meterEnabled)
+        {
+#if NET6_0_OR_GREATER
+            if (meterEnabled)
+            {
+                logger?.LogInformation(
+                    "The same counters are also published to the '{MeterName}' meter. Collect them " +
+                    "from OpenTelemetry, Azure Monitor or Application Insights SDK 3.x with " +
+                    ".WithMetrics(m => m.AddMeter(\"{MeterName}\")), which is the only path that " +
+                    "works once EventCounter collection is gone.",
+                    CounterNames.MeterName,
+                    CounterNames.MeterName);
+            }
+            else
+            {
+                logger?.LogInformation(
+                    "Meter publication is switched off by configuration " +
+                    "('{SectionName}:Meter:Enabled' is false), so the counters leave this process " +
+                    "over the '{EventSourceName}' EventSource only.",
+                    Configuration.InstrumentationOptions.SectionName,
+                    CounterNames.EventSourceName);
+            }
+#else
+            // .NET Framework has no System.Diagnostics.Metrics, so there is nothing to report and
+            // nothing the operator could do about it. The setting is ignored in silence for the same
+            // reason ModuleSupport ignores it: one configuration file is meant to serve all three
+            // versions.
+            _ = logger;
+            _ = meterEnabled;
+#endif
         }
     }
 }

@@ -1,5 +1,7 @@
+using Optimizely.Performance.Counters.Core.Deployment;
 using Optimizely.Performance.Counters.Core.Diagnostics;
 using Optimizely.Performance.Counters.Core.Http;
+using Optimizely.Performance.Counters.Core.Telemetry;
 
 namespace Optimizely.Performance.Counters.Core.Configuration
 {
@@ -51,6 +53,22 @@ namespace Optimizely.Performance.Counters.Core.Configuration
 
         /// <summary>Gets or sets the outbound response cacheability options.</summary>
         public HttpCacheabilityOptions Http { get; set; } = new HttpCacheabilityOptions();
+
+        /// <summary>Gets or sets the meter publication options.</summary>
+        /// <remarks>
+        /// The only node here that turns a delivery path on or off rather than a measurement. Every
+        /// other switch decides whether a counter is produced; this decides how the counters that
+        /// are produced leave the process.
+        /// </remarks>
+        public MeterOptions Meter { get; set; } = new MeterOptions();
+
+        /// <summary>Gets or sets the deployed assembly reporting options.</summary>
+        /// <remarks>
+        /// The one node here that does not configure a counter. Everything else in this tree
+        /// measures the running site; this records what was deployed, so that a change in one can be
+        /// attributed to a change in the other.
+        /// </remarks>
+        public DeploymentOptions Deployment { get; set; } = new DeploymentOptions();
     }
 
     /// <summary>

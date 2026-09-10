@@ -62,3 +62,20 @@ Registered 74 EventCounters with Application Insights, from 2 event sources
 
 If Application Insights is not installed, the counters still go to the `Optimizely-Performance`
 EventSource and the log says so, with the `dotnet-counters` command to read them.
+
+## OpenTelemetry, Azure Monitor and Application Insights 3.x
+
+The subscription above needs `EventCounterCollectionModule`, which only exists in the classic 2.x
+Application Insights SDK. A V13 site is as likely to be on the Azure Monitor OpenTelemetry distro or
+on SDK 3.x, and neither of those collects EventCounters at all — so the same counters are also
+published to a `System.Diagnostics.Metrics` meter named `Optimizely-Performance`, carrying the same
+counter names. Nothing subscribes to it automatically; add the meter to whatever you already have:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .UseAzureMonitor()
+    .WithMetrics(metrics => metrics.AddMeter("Optimizely-Performance"));
+```
+
+Both paths run at once, so a site that adds nothing keeps behaving exactly as before. Turn the meter
+off with `Optimizely:Instrumentation:Meter:Enabled` if you want a single publication path.

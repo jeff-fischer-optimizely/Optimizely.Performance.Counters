@@ -40,6 +40,20 @@ namespace Optimizely.Performance.Counters.Core.Telemetry
         /// </summary>
         public const string EventSourceName = "Optimizely-Performance";
 
+        /// <summary>
+        /// Meter name for the same counters, published in parallel with the EventSource on .NET 6
+        /// and later by <c>MeterMetricTracker</c>. This is the string a host passes to
+        /// <c>.WithMetrics(m =&gt; m.AddMeter(...))</c> to collect all of them.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately the same string as <see cref="EventSourceName"/>. The two paths publish the
+        /// same names to the same audience by different transports, so a site that reads a counter
+        /// off one and looks for it on the other should not have to learn a second identifier. It is
+        /// a separate <c>const</c> because they are separate contracts - an EventSource name and a
+        /// meter name are matched by different collectors - and one could outlive the other.
+        /// </remarks>
+        public const string MeterName = EventSourceName;
+
         /// <summary>Content read and write operations, from the CMS content decorators.</summary>
         public static class CmsContent
         {

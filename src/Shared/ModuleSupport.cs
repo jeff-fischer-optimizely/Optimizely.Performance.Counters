@@ -3,9 +3,11 @@ using EPiServer.Framework.Initialization;
 using EPiServer.ServiceLocation;
 using Microsoft.Extensions.Logging;
 using Optimizely.Performance.Counters.Core.Configuration;
+using Optimizely.Performance.Counters.Core.Deployment;
 using Optimizely.Performance.Counters.Core.Diagnostics;
 using Optimizely.Performance.Counters.Core.Http;
 using Optimizely.Performance.Counters.Core.Telemetry;
+using Optimizely.Performance.Counters.VersionDetection;
 #if !CMS11
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -123,21 +125,23 @@ namespace Optimizely.Performance.Counters.Shared
         /// </summary>
         /// <param name="context">Container configuration context supplied by the framework.</param>
         /// <param name="logger">Log sink; may be null.</param>
-        internal static void ConfigureTelemetry(ServiceConfigurationContext context, ILogger? logger)
+        /// <param name="options">Meter options, so the log can say which delivery paths are live.</param>
+        internal static void ConfigureTelemetry(
+            ServiceConfigurationContext context, ILogger? logger, MeterOptions options)
         {
 #if CMS11
             // V11 exposes IServiceConfigurationProvider, not IServiceCollection, so the Application
             // Insights registration has nothing to attach to. Detection still runs and is logged.
             _ = context;
-            TelemetryStartup.Configure(null, logger);
+            TelemetryStartup.Configure(null, logger, options.Enabled);
 #else
-            TelemetryStartup.Configure(context.Services, logger);
+            TelemetryStartup.Configure(context.Services, logger, options.Enabled);
 #endif
         }
 
         /// <summary>
-        /// Registers the EventCounter-based metric tracker, which works with Application Insights,
-        /// DataDog and dotnet-counters alike.
+        /// Registers the metric tracker: EventCounters always, and a <c>Meter</c> alongside them on
+        /// V12 and V13 unless configuration says otherwise.
         /// <para>
         /// TryAdd rather than Add: the CMS and Commerce packages both register this tracker and
         /// are routinely installed side by side. A second registration would create a second
@@ -145,13 +149,50 @@ namespace Optimizely.Performance.Counters.Shared
         /// </para>
         /// </summary>
         /// <param name="context">Container configuration context supplied by the framework.</param>
-        internal static void RegisterMetricTracker(ServiceConfigurationContext context)
+        /// <param name="options">Meter options, as read from configuration.</param>
+        /// <returns>
+        /// What was registered, for the caller to log. Returned rather than logged here because both
+        /// modules already have a line saying which tracker they registered, and the honest thing is
+        /// for that line to be right rather than for there to be a second one.
+        /// </returns>
+        /// <remarks>
+        /// Both paths, not one or the other, and for the length of at least one release cycle. The
+        /// EventSource is the only thing that works on V11 and the only thing <c>dotnet-counters</c>
+        /// and the DataDog tracer discover unprompted; the meter is the only thing that reaches
+        /// OpenTelemetry, <c>UseAzureMonitor()</c>, or Application Insights SDK 3.x - none of which
+        /// collect EventCounters at all, because the collector package has no 3.x. A site should not
+        /// have to know which of those it will be running in 2027 to get its counters today.
+        /// </remarks>
+        internal static string RegisterMetricTracker(
+            ServiceConfigurationContext context, MeterOptions options)
         {
 #if CMS11
+            // No meters on .NET Framework, whatever the options say. The setting is not reported as
+            // ignored either: the same configuration file is meant to be portable across versions,
+            // and warning a V11 site about a setting that is correct for its V12 sibling is noise.
+            _ = options;
+
             context.Services.TryAdd<IMetricTracker>(
                 locator => new EventCounterMetricTracker(), ServiceInstanceScope.Singleton);
+
+            return nameof(EventCounterMetricTracker);
 #else
-            context.Services.TryAddSingleton<IMetricTracker, EventCounterMetricTracker>();
+            if (!options.Enabled)
+            {
+                context.Services.TryAddSingleton<IMetricTracker, EventCounterMetricTracker>();
+                return nameof(EventCounterMetricTracker);
+            }
+
+            // A factory, so the container owns the composite and disposes it at shutdown - which is
+            // what releases the meter. Registering the type instead would leave the meter published
+            // for the life of the process, which matters in tests and in hosts that restart the
+            // container without restarting the process.
+            context.Services.TryAddSingleton<IMetricTracker>(_ => new CompositeMetricTracker(
+                new EventCounterMetricTracker(),
+                new MeterMetricTracker()));
+
+            return nameof(EventCounterMetricTracker) + " + " + nameof(MeterMetricTracker) +
+                " (meter '" + CounterNames.MeterName + "')";
 #endif
         }
 
@@ -345,6 +386,54 @@ namespace Optimizely.Performance.Counters.Shared
             }
 
             HttpCacheabilityMonitor.Start(metrics, options, logger);
+        }
+
+        /// <summary>
+        /// Starts the deployed assembly reporting, if nothing has started it already.
+        /// </summary>
+        /// <param name="context">Initialization context, holding the built container.</param>
+        /// <param name="options">Deployment options, as read from configuration.</param>
+        /// <param name="logger">Log sink; may be null.</param>
+        /// <remarks>
+        /// Called from both modules, and idempotent for the same reason
+        /// <see cref="StartHttpCacheability"/> is: <see cref="DeploymentTracker"/> makes the second
+        /// call a no-op, so neither module has to know whether the other is installed.
+        /// <para>
+        /// The version reported is the one this assembly was compiled for, not the one detection
+        /// finds at runtime. They agree on a correctly installed site, and where they do not, the
+        /// compiled-for value is the honest thing to put in a record of what was deployed - it is a
+        /// property of the file on disk rather than of what the process has got round to loading.
+        /// </para>
+        /// </remarks>
+        internal static void StartDeploymentTracking(
+            InitializationEngine context, DeploymentOptions options, ILogger? logger)
+        {
+            if (!options.Enabled)
+            {
+                return;
+            }
+
+            // Null on V11, which has no IServiceProvider to hand out; the Application Insights sink
+            // falls back to TelemetryConfiguration.Active there, which is that version's answer.
+            var services = ResolveFromEngine<IServiceProvider>(context);
+
+            var loggerFactory = ResolveFromEngine<ILoggerFactory>(context);
+
+            if (loggerFactory == null)
+            {
+                // Not fatal, and worth saying: the tracker logs which state store it settled on and
+                // what that costs, and without a factory that explanation goes nowhere.
+                logger?.LogInformation(
+                    "Deployment tracking is starting without a logger factory, so the state store it " +
+                    "chose will not be reported. The events themselves are unaffected.");
+            }
+
+            DeploymentTracker.Start(
+                options,
+                OptimizelyVersionDetector.GetExpectedVersion().ToString(),
+                services,
+                loggerFactory,
+                sink: null);
         }
 
 #if CMS11

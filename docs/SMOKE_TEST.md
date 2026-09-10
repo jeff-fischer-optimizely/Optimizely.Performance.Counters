@@ -106,7 +106,11 @@ Six lines matter, in this order:
    `ConnectionPoolPerformanceCounterDetail` switch is set - followed by the line explaining that V11
    has no `IServiceCollection` and giving the EventSource name to read directly. That split is a
    known gap, not a failure.
-3. **`Registered IMetricTracker: EventCounterMetricTracker`.**
+3. **`Registered IMetricTracker: ...`.** On V12 and V13, `EventCounterMetricTracker +
+   MeterMetricTracker (meter 'Optimizely-Performance')`, preceded by the line explaining how to
+   collect the meter. On V11, `EventCounterMetricTracker` alone and no meter line - .NET Framework
+   has no `System.Diagnostics.Metrics`. A V12 or V13 site that names only the EventCounter tracker
+   has `Optimizely:Instrumentation:Meter:Enabled` set to false, and the preceding line says so.
 4. **The decorator list.** V11 and V12 name three; V13 also names `IEventPublisher`.
 5. **`Cache dependency cascade instrumentation installed on IMemoryCache.`** V12 and V13 only. A
    warning beginning `Could not decorate IMemoryCache` here means the nine cascade counters will
@@ -167,6 +171,29 @@ Application Insights used to show nothing at all here.
 
 Seventy-five in total. `Optimizely.CMS.Events.*` needs V13; the `Optimizely.Commerce.Orders.*` counters
 need the Commerce package.
+
+### The same counters on the meter (V12 / V13)
+
+On V12 and V13 every counter above is published a second time, to a `System.Diagnostics.Metrics`
+meter of the same name. `dotnet-counters` reads meters too, so verifying it needs no exporter and no
+code change - the argument means the meter this time rather than the EventSource:
+
+```
+dotnet-counters monitor --process-id <pid> --counters Optimizely-Performance
+```
+
+Expected: the same names, the same values. This is the path that reaches OpenTelemetry,
+`UseAzureMonitor()` and Application Insights SDK 3.x, none of which collect EventCounters at all -
+so on a site running any of those, this stage is the only one that will show anything and Stage 4 is
+not going to work. Nothing subscribes to the meter automatically; an exporter needs
+`.WithMetrics(m => m.AddMeter("Optimizely-Performance"))`.
+
+Every instrument is a histogram, so a collector may report count, mean, min, max and percentiles
+where the EventCounter path reported the first four only. For the counters published once per
+interval - the rates, the percentages, the uptime - the mean is the value and the chart is the same.
+
+Nothing to check on V11: .NET Framework has no meters, and
+`Optimizely:Instrumentation:Meter:Enabled` is ignored there.
 
 The probe counters behave differently from the decorator counters and are worth checking separately,
 because they move without any traffic at all:
@@ -426,6 +453,72 @@ quiet windows on the same instance.
 
 ---
 
+## Stage 9 - the deployment events (all three majors)
+
+The one feature here that reports the *build* rather than the site, so it is the one stage that has
+to be run twice: once, then again after deploying something. The queries live in the **What is
+deployed, and when it changed** section of
+[README.md](../README.md#what-is-deployed-and-when-it-changed).
+
+1. **Confirm the scan happened and knows where it is.** One line at `Information` per process start:
+
+   ```
+   OptiCounters.DeploymentManifest InstanceId=... Fingerprint=... AssemblyCount=... Reason=Startup
+     StateStore=... Transition=Baseline
+   ```
+
+   `AssemblyCount` in the low hundreds is a bin folder. A count in single digits means the scanner
+   fell back to the loaded assemblies, which the manifest reports as `InventorySource`.
+
+2. **Read `StateStore` and believe it.** It is two parts, `Kind/Durability` - which directory won,
+   and whether what is written there is expected to survive a deployment. `Ephemeral` here is not a
+   fault and is the expected answer on a DXP container; it means step 5 will report baselines rather
+   than diffs, and that the query-side comparison is the one to use.
+
+3. **Confirm the events arrive in Application Insights.** On a 2.x host, within a couple of minutes:
+
+   ```kusto
+   customEvents
+   | where name startswith "OptiCounters."
+   | summarize count(), any(customDimensions) by name
+   ```
+
+   Four names are possible; two - `DeploymentManifest` and `AssemblyInventory` - should be there on
+   a first run. On V11 both go through `TelemetryConfiguration.Active`, the same route Stage 5 uses,
+   so this works there where Stage 4 does not.
+
+4. **Confirm the stamp reached ordinary telemetry.** This is the half that makes the rest worth
+   having, and the half that fails quietly:
+
+   ```kusto
+   requests
+   | where timestamp > ago(1h)
+   | summarize
+       stamped = countif(isnotempty(tostring(customDimensions.DeploymentFingerprint))),
+       total = count()
+   ```
+
+   Not all of them: requests served before the first scan completed have no value. A `stamped` of
+   zero on a site whose manifest events are arriving means the initializer did not attach - see the
+   troubleshooting entry in [README.md](../README.md#requests-have-no-deploymentfingerprint-dimension).
+
+5. **Deploy something and run it again.** Anything that changes one DLL will do; rebuilding the site
+   without changing a line is a valid test and a more interesting one, because the version numbers
+   will be identical and the fingerprint must still change. Expect a new `Fingerprint` on the
+   manifest, a fresh `AssemblyInventory`, and - only where step 2 said the store was durable -
+   `AssemblyChanged` rows naming the assemblies, with `SameVersionDifferentBinary` on the rebuilt
+   ones.
+
+6. **On a scaled-out site, watch the fleet converge.** Run the divergence query during the rollout:
+   it should report two fingerprints while instances are being replaced and one afterwards. How long
+   that takes is worth writing down, because it is the floor for any alert built on it.
+
+**What this stage cannot establish.** That the fingerprint corresponds to a particular release. It
+identifies the bits, not the pipeline that produced them; `ContainerImage` on the manifest event is
+the closest thing to a build name and only exists on a container host.
+
+---
+
 ## Known gaps
 
 - **Application Insights on V11, for this package's own counters.** `TelemetryStartup.Configure`
@@ -433,13 +526,15 @@ quiet windows on the same instance.
   is logged; the counters are published to the EventSource but nothing subscribes to them. The SQL
   connection pool counters are collected on V11 - see Stage 5 - because that path goes through
   `TelemetryConfiguration.Active` rather than the container.
-- **Application Insights 3.x.** Only the 2.x SDK is supported. 3.0 re-based the SDK on
-  OpenTelemetry and removed `EventCounterCollectionModule`, `ConfigureTelemetryModule` and the
-  telemetry-module concept the registration is built on, so on a site running 3.x nothing is
-  subscribed and the "no telemetry system detected" path does not fire either - `TelemetryClient`
-  still resolves, so detection reports Application Insights as present. Collecting EventCounters
-  under 3.x means OpenTelemetry's own EventCounters instrumentation, which is a feature rather than
-  a version bump.
+- **Application Insights 3.x is not auto-subscribed, but is reachable.** Only the 2.x SDK gets the
+  automatic registration. 3.0 re-based the SDK on OpenTelemetry and removed
+  `EventCounterCollectionModule`, `ConfigureTelemetryModule` and the telemetry-module concept the
+  registration is built on, so Stage 4 will show nothing there - and the "no telemetry system
+  detected" path does not fire either, because `TelemetryClient` still resolves and detection
+  reports Application Insights as present. The meter is the answer: the counters are all on it, and
+  one line of `.WithMetrics(m => m.AddMeter("Optimizely-Performance"))` collects them. What remains
+  a gap is that this package does not add that line for you, on the grounds that an exporter's
+  metric budget is the host's decision.
 - **Counters cannot be turned off one at a time.** Everything under `Optimizely:Instrumentation`
   is configurable - the settings template the package installs lists every key at its default -
   but the switches are per feature, not per counter: a probe, the

@@ -10,9 +10,10 @@ make these numbers appear.
 
 This package makes them appear. It wraps the Optimizely services that do the work in instrumented
 decorators, publishes the timings and rates as .NET EventCounters on an EventSource named
-`Optimizely-Performance`, and — where the host supports it — subscribes Application Insights to
-them automatically. The metrics land in `customMetrics` next to your existing telemetry, queryable
-in Kusto and chartable against request duration. Install, restart, no code changes.
+`Optimizely-Performance` — and, on V12 and V13, to a `Meter` of the same name for OpenTelemetry —
+and where the host supports it, subscribes Application Insights to them automatically. The metrics
+land in `customMetrics` next to your existing telemetry, queryable in Kusto and chartable against
+request duration. Install, restart, no code changes.
 
 Alongside the decorators it runs a small set of **probes** — components that measure a condition
 nothing publishes, rather than reading a counter somebody else maintains. Thread pool queue
@@ -21,6 +22,11 @@ lock wait *distributions* instead of a contention count, and the depth of the qu
 own cache lock. It also subscribes your APM to the `Microsoft.Data.SqlClient` connection pool
 counters, because a cache problem in Optimizely becomes a connection pool problem about thirty
 seconds later and you want both series on one chart.
+
+And because the first question after any of these moves is *did we ship something*, it records what
+is in the bin folder: a fingerprint over every assembly's compiled identity, emitted on startup and
+on a heartbeat, and stamped onto every request the site serves. Comparing a release against the one
+before it becomes a `summarize` over a dimension rather than an argument about timestamps.
 
 It is the CMS-and-Commerce half of a pair.
 [Optimizely.Performance.DotNetCounters](https://github.com/jeff-fischer-optimizely/Optimizely.Performance.DotNetCounters)
@@ -68,9 +74,11 @@ actually stopped your threads, which nothing maintains.
   a before-and-after comparison across a CMS migration is a Kusto query rather than an argument.
 - **Nothing to write.** Auto-registers through `IConfigurableModule`. No `Startup.cs` change, no
   attribute, no wrapper of your own.
-- **Telemetry-agnostic.** EventCounters are an open .NET mechanism. Application Insights is
-  auto-wired, DataDog auto-discovers the source, `dotnet-counters` attaches with no configuration
-  at all, and none of them are a dependency of this library.
+- **Telemetry-agnostic, on two mechanisms.** Every counter is published both as an EventCounter and
+  — on V12 and V13 — to a `System.Diagnostics.Metrics` meter, under the same name. Application
+  Insights is auto-wired, DataDog auto-discovers the EventSource, `dotnet-counters` attaches with no
+  configuration at all, and OpenTelemetry or Azure Monitor collects the meter with one line. None of
+  them are a dependency of this library, and no counter is reachable on only one of the two paths.
 
 ## When you'd want it
 
@@ -138,7 +146,11 @@ that fails loudly at startup rather than misbehaving quietly.
 The package publishes whether or not anything is listening. To see the numbers you need one of:
 
 - **Application Insights** on V12 or V13 — subscribed automatically at startup, nothing to
-  configure beyond the connection string you already have.
+  configure beyond the connection string you already have. This needs the *classic* 2.x SDK; see
+  [OpenTelemetry, Azure Monitor and Application Insights 3.x](#opentelemetry-azure-monitor-and-application-insights-3x)
+  if you are on anything newer.
+- **OpenTelemetry, `UseAzureMonitor()` or Application Insights SDK 3.x** on V12 or V13 — one line,
+  `.WithMetrics(m => m.AddMeter("Optimizely-Performance"))`.
 - **DataDog** — discovers the `Optimizely-Performance` source on its own.
 - **`dotnet-counters`** on V12 or V13 — `dotnet-counters monitor --process-id <pid> Optimizely-Performance`.
 - **PerfView or your own `EventListener`** on V11, where `dotnet-counters` cannot attach.
@@ -157,6 +169,57 @@ registration is not — see [SQL connection pool counters on V11](#sql-connectio
 
 See [examples/](examples/) for the settings to merge into a V11, V12 or V13 site, and
 [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) for how to confirm each stage on a real one.
+
+### OpenTelemetry, Azure Monitor and Application Insights 3.x
+
+The automatic Application Insights subscription works through `EventCounterCollectionModule`, which
+lives in `Microsoft.ApplicationInsights.EventCounterCollector`. That package stopped at 2.23.0 and
+has no 3.x. Application Insights SDK 3.x, the Azure Monitor OpenTelemetry distro
+(`UseAzureMonitor()`) and plain OpenTelemetry collect meters instead, and none of them collect
+EventCounters at all — so on those hosts the EventSource is a channel nobody is tuned to, and
+nothing in the startup log or the portal would have told you. AI Classic 2.x retires on
+31 March 2027, which puts a date on it.
+
+So every counter is published twice on V12 and V13: to the EventSource, and to a
+`System.Diagnostics.Metrics` meter named `Optimizely-Performance` — the same name, and the same
+counter names on it. Subscribe with one line:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics.AddMeter("Optimizely-Performance"));
+```
+
+or, on the Azure Monitor distro:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .UseAzureMonitor()
+    .WithMetrics(metrics => metrics.AddMeter("Optimizely-Performance"));
+```
+
+Both paths run at once and neither is a fallback for the other, because neither reaches every host:
+`dotnet-counters` and the DataDog tracer find the EventSource without being told, and .NET Framework
+has no meters at all. A site on classic Application Insights that adds nothing keeps working exactly
+as before.
+
+Every instrument is a histogram, including the counters that read as gauges. An EventCounter *is* a
+histogram — it accumulates observations over an interval and reports count, mean, min and max — so
+this is the faithful translation rather than a reinterpretation, and it is what keeps the two paths
+reporting the same numbers. It is also a straight upgrade: a histogram keeps buckets where an
+EventCounter kept four aggregates, so percentiles are available on this path and not on the other.
+For a counter published once per interval, such as a rate or the uptime, the mean is that value
+exactly and the chart is identical.
+
+Two things are deliberately absent. There are **no tags**: the whole counter set is built around
+EventCounters having no dimensions — one name per GC generation, one per eviction reason, one per
+cascade origin — and tagging one path and not the other would give a site a different counter shape
+from each backend and make every dashboard backend-specific. And there are **no units**, because the
+Prometheus exporter folds a unit into the exported metric name, which would cost the name parity
+this path exists to provide. Both are worth revisiting later, on both paths at once or on neither.
+
+Turn it off with `Optimizely:Instrumentation:Meter:Enabled` set to `false` — worth doing only to
+keep a single publication path while diagnosing a discrepancy between the two. On V11 the setting is
+ignored in silence, so one settings file still serves all three majors.
 
 ### SQL connection pool counters on V11
 
@@ -205,13 +268,21 @@ changing and leave the rest out.
       },
       "Cache":   { "Cascade": { "Enabled": true, "LargeRemovalThreshold": 1000 } },
       "Logging": { "Enabled": true },
-      "Http":    { "Enabled": true, "LogSharedCacheConflicts": true }
+      "Http":    { "Enabled": true, "LogSharedCacheConflicts": true },
+      "Meter":   { "Enabled": true },
+      "Deployment": {
+        "Enabled": true,
+        "StatePath": "",
+        "InventoryMode": "OnChange",
+        "HeartbeatMinutes": 15,
+        "StampTelemetry": true
+      }
     }
   }
 }
 ```
 
-Three things worth knowing before you need them.
+Five things worth knowing before you need them.
 
 **The master switch is there for an incident.** `Optimizely:Instrumentation:Enabled` set to `false`
 decorates nothing, starts no probe and registers no counter — each module logs one line and returns.
@@ -220,6 +291,16 @@ Ruling this package out as the cause of something should be a setting, not a dep
 **The switches are per feature, not per counter.** A probe, the cascade instrumentation or the log
 write rate goes off as a unit. That is deliberate: a chart that is empty because somebody
 deprovisioned one counter looks exactly like a chart that is empty because the counter is broken.
+
+**`Meter` is the one switch that is not about a measurement.** Everything else here decides whether
+a counter is produced; `Meter:Enabled` decides how the counters that are produced leave the process.
+It defaults to on for the reason given in
+[OpenTelemetry, Azure Monitor and Application Insights 3.x](#opentelemetry-azure-monitor-and-application-insights-3x):
+the failure it prevents is a site whose counters reach nobody and whose log does not say so.
+
+**`Deployment` is not about a counter either.** Everything else in the tree measures the running
+site; `Deployment` records what was deployed, so a change in one can be attributed to a change in
+the other. It is described in [What was deployed](#what-was-deployed).
 
 **A misspelled key is not silently ignored.** Anything unrecognised under `Optimizely:Instrumentation`
 is listed in the startup log, because a typo and a correctly configured counter on a healthy site are
@@ -236,6 +317,10 @@ unrecognised keys, which is the one behaviour a settings file most needs to be t
 Seventy-five counters, from six decorated services, four probes, the host's logging pipeline, the
 responses the site sends and the process itself. This is the whole list — the package instruments a
 finite, hand-maintained set of seams rather than crawling for things to wrap.
+
+One thing under this heading is not a counter. [What was deployed](#what-was-deployed) records the
+assemblies in the bin folder, so that a move in any of the seventy-five can be attributed to a
+change in the build rather than to a change in traffic.
 
 ### From the decorators
 
@@ -473,6 +558,66 @@ EventCounter names exactly and a name with a dimension baked into it is a name n
 Where a dimension genuinely mattered it is baked into separate *names* instead: one counter per GC
 generation, one per eviction reason, one per cascade origin.
 
+### What was deployed
+
+Everything above measures the running site. This measures what is *in* it, because the first
+question after a counter moves is almost always whether anything shipped — and the honest answer on
+most sites is a Slack search for a release announcement.
+
+At startup and every `HeartbeatMinutes` the bin folder is read and reduced to a **fingerprint**: a
+16-character hash over every assembly's name and identity. Identity is the assembly's **MVID**, the
+GUID the compiler writes into the module to name that exact compilation, so the fingerprint has a
+property a version number does not — a rebuild of the same version reads as a change, and a version
+bump with no rebuild does not. Files the reader cannot parse as managed assemblies, native
+dependencies among them, fall back to file version and length.
+
+Four events go to Application Insights, all named `OptiCounters.*` so one query finds them:
+
+| Event | One row per | Carries |
+|---|---|---|
+| `OptiCounters.DeploymentManifest` | process start, then per heartbeat | `Fingerprint`, `AssemblyCount`, `Reason` (`Startup`/`Heartbeat`), `Transition` (`Baseline`/`Changed`/`Unchanged`), `StateStore`, and when there is a previous manifest `PreviousFingerprint`, `Added`, `Changed`, `Removed` |
+| `OptiCounters.AssemblyInventory` | assembly, on change and on the slow re-emit | `Fingerprint`, `Assembly`, `Version`, `AssemblyVersion`, `FileVersion`, `InformationalVersion`, `Mvid`, `SizeBytes`, `Managed` |
+| `OptiCounters.AssemblyChanged` | assembly that differs from the last recorded manifest | `Change` (`Added`/`Changed`/`Removed`), `Assembly`, `Version`, `PreviousVersion`, `Mvid`, `PreviousMvid`, and `SameVersionDifferentBinary` when the version matched and the bits did not |
+| `OptiCounters.FleetDivergence` | heartbeat at which a peer is visibly running something else | `PeerCount`, `DivergentPeerCount`, `PeerFingerprints` |
+
+Every event except the inventory rows also carries the reporting instance — `InstanceId`,
+`RoleName`, `MachineName`, `Runtime`, `OptimizelyVersion`, and `Slot`, `ContainerImage` and
+`ProcessStartUtc` where the host offers them. That is what makes a per-instance diff a `summarize`
+rather than a guess, and it is written explicitly rather than left to `cloud_RoleInstance`, which is
+populated differently by the ASP.NET Core SDK, by the App Service codeless agent and by whatever
+initializer a site added of its own — and is absent on V11. The inventory rows leave it out on
+purpose: they are keyed by fingerprint, and a fingerprint means the same thing on every instance, so
+repeating the instance on a few hundred rows would only make them look instance-specific.
+
+**The fingerprint is also stamped onto everything else the site sends.** `StampTelemetry` adds a
+`DeploymentFingerprint` custom dimension to every request, dependency, exception and trace, so
+grouping any existing chart by it turns *did the release cause this* into a query. It does **not**
+touch `application_Version`: on DXP that column already carries the site's own release — it moves
+across a deployment, and the in-process SDK and the codeless agent agree on it — so filling it in
+"when empty" would leave one column holding a release number on one host and a fingerprint on
+another. The host keeps that column and this adds its own; the manifest event goes through the
+host's `TelemetryClient`, so one row carries both.
+
+**Change detection is best-effort, and the queries do not depend on it.** Reporting *what changed*
+needs the previous manifest to still be readable, so the last one is written to disk: `StatePath` if
+set, otherwise the first of a series of candidates that proves writable, with the winner and whether
+it is expected to survive a deployment reported on `StateStore` on every row. On a DXP container
+none of them survive — the container is replaced wholesale on release, `WEBSITES_ENABLE_APP_SERVICE_STORAGE`
+is off, and `/home` is container-local — so every start there is a `Baseline` and the
+`AssemblyChanged` events never fire. That is why the fingerprint is on *every* manifest row rather
+than only on the ones that changed: the diff is done in the query, needs no state, and works
+identically on a host where the state store happens to be durable.
+
+`FleetDivergence` is the partial-swap detector, and it only works where the state store is shared —
+several instances writing manifests into one directory, each keyed by `InstanceId`. Where that
+holds, an instance that can see a peer on a different fingerprint says so and logs it. Where it does
+not, the same condition is a query: one `summarize` over the manifest events, below.
+
+Without Application Insights the events go to the log instead — the inventory at `Debug`, the rest
+at `Information` — because a V11 site logging through log4net still deploys, and *what is in the bin
+folder on this server* is a question the log can answer perfectly well. Only the querying needs
+Azure.
+
 ---
 
 ## How it works
@@ -486,14 +631,20 @@ generation, one per eviction reason, one per cascade origin.
   InstrumentedOrderRepository                              |
                                                            |
   CacheLockProbe                    (V12/V13)              v
-  ThreadPoolQueueDelayProbe                     EventCounterMetricTracker
+  ThreadPoolQueueDelayProbe                       CompositeMetricTracker
   GcPauseProbe                      (V12/V13)              |
-  ContentionProbe                   (V12/V13)              v
-                             OptimizelyPerformanceEventSource ("Optimizely-Performance")
-                                                           |
-                    +--------------------------------------+--------------------+
-                    v                                      v                    v
-     AI EventCounterCollectionModule                    DataDog          dotnet-counters
+  ContentionProbe                   (V12/V13)     +--------+------------------+
+                                                  v                           v
+                              EventCounterMetricTracker          MeterMetricTracker (V12/V13)
+                                                  |                           |
+                                                  v                           v
+                    OptimizelyPerformanceEventSource            Meter ("Optimizely-Performance")
+                             ("Optimizely-Performance")                       |
+                                                  |                           v
+                    +-----------------------------+------+       OpenTelemetry / Azure Monitor
+                    v                             v      v        / AI SDK 3.x  (.AddMeter)
+     AI EventCounterCollectionModule           DataDog  dotnet-counters
+             (AI SDK 2.x only)
                     ^
                     |
      Microsoft.Data.SqlClient.EventSource  (subscribed, not published, by this package)
@@ -501,8 +652,9 @@ generation, one per eviction reason, one per cascade origin.
 
 An `[InitializableModule] : IConfigurableModule` in each package runs during container
 construction, before any module initializes. It logs the detected and expected Optimizely version
-and throws if they disagree, detects the telemetry systems present, registers
-`EventCounterMetricTracker` as `IMetricTracker`, and wraps the services above using
+and throws if they disagree, detects the telemetry systems present, registers the `IMetricTracker`
+— `EventCounterMetricTracker` on V11, and on V12 and V13 a `CompositeMetricTracker` over that and
+`MeterMetricTracker` — and wraps the services above using
 `context.Services.Intercept<T>()`. The Commerce module does the same and is idempotent about the
 shared parts, so installing both packages registers telemetry once.
 
@@ -527,7 +679,9 @@ Nothing in the library listens to its own EventSource, and it does not republish
 **Overhead.** Timing is allocation-free: `OperationTimer` is a `readonly struct` over a single
 `Stopwatch.GetTimestamp()`, and the decorators forward through explicit try/catch blocks rather
 than a `Measure<T>(name, () => ...)` helper, because that helper allocates a closure per call. When
-no collector is attached, `EventSource.IsEnabled()` short-circuits and the cost is a branch. The
+no collector is attached, `EventSource.IsEnabled()` short-circuits and the cost is a branch; the
+meter path costs a second call that returns on a disabled instrument, which is why it can be left on
+by default. The
 cache and event decorators sit on paths that fire thousands of times a second, so those accumulate
 into interlocked fields and flush on a 60-second timer instead of writing per call. What your
 collector *reads* is on its own schedule: `EventCounterCollectionModule` polls at 60 seconds by
@@ -556,7 +710,12 @@ Set `Optimizely.Performance.Counters.CMS.Initialization` and
        ...
 [INFO] Telemetry Detection: Telemetry Systems: Application Insights 2.22.0.997, EventCounters
 [INFO] Registered 83 EventCounters with Application Insights, from 2 event sources
-[INFO] Registered IMetricTracker: EventCounterMetricTracker
+[INFO] The same counters are also published to the 'Optimizely-Performance' meter. Collect them
+       from OpenTelemetry, Azure Monitor or Application Insights SDK 3.x with
+       .WithMetrics(m => m.AddMeter("Optimizely-Performance")), which is the only path that works
+       once EventCounter collection is gone.
+[INFO] Registered IMetricTracker: EventCounterMetricTracker + MeterMetricTracker
+       (meter 'Optimizely-Performance')
 [INFO] Registering CMS performance counter decorators
 [INFO] Registered decorators: IContentLoader, IContentRepository, ISynchronizedObjectInstanceCache.
        IEventPublisher is V13-only and was not registered.
@@ -602,7 +761,9 @@ On every version checked — CMS 11.21.5, 12.24.1 and 13.1.1, and Commerce 13, 1
 hook. Any approach that works by subscribing to something the product emits has nothing to
 subscribe to, which rules out the whole OpenTelemetry auto-instrumentation family for
 Optimizely-specific metrics — those libraries cover ASP.NET Core, `HttpClient` and `SqlClient`, and
-none of them knows what an `IContentLoader` is.
+none of them knows what an `IContentLoader` is. This package is on the other side of that line: it
+creates the seam and then publishes it to a meter OpenTelemetry can collect, which is why
+`.AddMeter("Optimizely-Performance")` works where auto-instrumentation cannot.
 
 That leaves four real families of alternative.
 
@@ -950,6 +1111,153 @@ Writes with no `operation_Name` are not a defect in the query. They are the site
 from somewhere that is not a request — startup, a scheduled job, a background thread — and
 on a site whose write rate has just doubled, that bucket is often where the answer is.
 
+### What is deployed, and when it changed
+
+These read the `OptiCounters.*` events described in [What was deployed](#what-was-deployed). They
+work on any host, including one where nothing the site writes survives a deployment: the comparison
+is done here rather than in the process.
+
+```kusto
+// What every instance is running right now. Two fingerprints in this result during a rolling
+// deployment is expected; two fingerprints an hour after one finished is a partial swap
+customEvents
+| where name == "OptiCounters.DeploymentManifest"
+| where timestamp > ago(1h)
+| extend
+    role = tostring(customDimensions.RoleName),
+    instance = tostring(customDimensions.InstanceId),
+    fingerprint = tostring(customDimensions.Fingerprint),
+    assemblies = toint(customDimensions.AssemblyCount)
+| summarize arg_max(timestamp, fingerprint, assemblies) by role, instance
+| order by role asc, instance asc
+```
+
+```kusto
+// The same thing as an alert. Give the window a margin over how long a rollout takes on your
+// site - during one this is supposed to fire, and an alert that cries wolf every release is an
+// alert nobody reads
+customEvents
+| where name == "OptiCounters.DeploymentManifest"
+| where timestamp > ago(30m)
+| extend
+    role = tostring(customDimensions.RoleName),
+    instance = tostring(customDimensions.InstanceId),
+    fingerprint = tostring(customDimensions.Fingerprint)
+| summarize arg_max(timestamp, fingerprint) by role, instance
+| summarize builds = dcount(fingerprint), instances = count(), running = make_set(fingerprint) by role
+| where builds > 1
+```
+
+```kusto
+// When each build arrived and how long it was live. This is the release timeline, reconstructed
+// from what the instances were actually running rather than from what a pipeline reported
+customEvents
+| where name == "OptiCounters.DeploymentManifest"
+| extend
+    role = tostring(customDimensions.RoleName),
+    instance = tostring(customDimensions.InstanceId),
+    fingerprint = tostring(customDimensions.Fingerprint)
+| summarize
+    firstSeen = min(timestamp),
+    lastSeen = max(timestamp),
+    instances = dcount(instance)
+    by role, fingerprint
+| extend live = lastSeen - firstSeen
+| order by firstSeen asc
+```
+
+```kusto
+// Every DLL in one build. Take the fingerprint from any of the queries above
+let build = "0123456789abcdef";
+customEvents
+| where name == "OptiCounters.AssemblyInventory"
+| where tostring(customDimensions.Fingerprint) == build
+| summarize by
+    assembly = tostring(customDimensions.Assembly),
+    version = tostring(customDimensions.Version),
+    mvid = tostring(customDimensions.Mvid)
+| order by assembly asc
+```
+
+```kusto
+// What changed between two builds. "Rebuilt" is the row a version comparison cannot produce:
+// same version number, different bits - a hotfix rebuilt from a branch, or a package restored
+// from a different feed
+let before = "0123456789abcdef";
+let after  = "fedcba9876543210";
+let inventory = (build:string) {
+    customEvents
+    | where name == "OptiCounters.AssemblyInventory"
+    | where tostring(customDimensions.Fingerprint) == build
+    | summarize by
+        assembly = tostring(customDimensions.Assembly),
+        version = tostring(customDimensions.Version),
+        mvid = tostring(customDimensions.Mvid)
+};
+inventory(before)
+| join kind=fullouter inventory(after) on assembly
+| extend change = case(
+    isempty(assembly),  "Added",
+    isempty(assembly1), "Removed",
+    mvid == mvid1,      "Unchanged",
+    version == version1, "Rebuilt",
+                        "Changed")
+| where change != "Unchanged"
+| project change, assembly = coalesce(assembly, assembly1), from = version, to = version1
+| order by change asc, assembly asc
+```
+
+```kusto
+// Where the state store is durable - a V11 site, or anywhere with a mounted share - the site
+// reports the diff itself and this needs no fingerprints typed in
+customEvents
+| where name == "OptiCounters.AssemblyChanged"
+| extend
+    instance = tostring(customDimensions.InstanceId),
+    change = tostring(customDimensions.Change),
+    assembly = tostring(customDimensions.Assembly),
+    from = tostring(customDimensions.PreviousVersion),
+    to = tostring(customDimensions.Version),
+    rebuiltOnly = tostring(customDimensions.SameVersionDifferentBinary) == "true"
+| project timestamp, instance, change, assembly, from, to, rebuiltOnly
+| order by timestamp desc
+```
+
+And the one the rest of it is for. Every request, dependency, exception and trace carries the
+fingerprint of the build that served it, so the before-and-after is a `summarize` — no time ranges
+guessed, no deployment timestamp to look up, and a rolling deployment compares correctly while it is
+still half done:
+
+```kusto
+// Did the release do this. Two rows per operation means both builds served traffic in the
+// window; if only one appears, widen the range until the previous build is in it
+requests
+| where timestamp > ago(24h)
+| extend build = tostring(customDimensions.DeploymentFingerprint)
+| where isnotempty(build)
+| summarize
+    requests = count(),
+    failureRatePercent = round(100.0 * countif(success == false) / count(), 2),
+    p95 = percentile(duration, 95)
+    by operation_Name, build
+| order by operation_Name asc, p95 desc
+```
+
+```kusto
+// The same question asked of exceptions, which is usually the faster answer
+exceptions
+| where timestamp > ago(24h)
+| extend build = tostring(customDimensions.DeploymentFingerprint)
+| where isnotempty(build)
+| summarize count() by build, type, bin(timestamp, 1h)
+| render timechart
+```
+
+A caveat worth stating: an instance that started before this package was installed, or before the
+first scan finished, sends telemetry with no `DeploymentFingerprint` at all. `isnotempty(build)`
+above drops those rows rather than lumping them together as a build of their own, which they are
+not.
+
 ---
 
 ## Troubleshooting
@@ -963,6 +1271,12 @@ disagree — see the support matrix above. This is the intended failure, not a b
 **Counters appear in `dotnet-counters` but not in Application Insights.** Collection is fine and
 export is not. Check the connection string, and turn adaptive sampling off while you verify: a
 counter that is being sampled away is indistinguishable from one that is not being collected.
+
+**Nothing arrives in OpenTelemetry or Azure Monitor.** The meter has to be subscribed to
+explicitly — `.WithMetrics(m => m.AddMeter("Optimizely-Performance"))`. Nothing is auto-wired on
+that path, by design: an exporter's counter budget is the host's business. Check the startup log for
+the line naming the meter; if it says meter publication is switched off, that is
+`Optimizely:Instrumentation:Meter:Enabled`. On V11 there is no meter at all.
 
 **A counter is missing entirely.** EventCounters that have never been written are not listed at
 all. Drive the matching traffic first. `CartLineItemCount` and `CartTotal` in particular need a
@@ -1027,6 +1341,35 @@ this package reproduces it, and a mismatch produces a counter that reads as abse
 erroring. Compare the path in the startup log against what Performance Monitor shows under
 `.NET Data Provider for SqlServer`.
 
+### Every deployment reports as a baseline and no `AssemblyChanged` events arrive
+
+Expected on a container host, and the manifest events say so: `StateStore` on every row reports
+which directory won and whether what is written there is expected to outlive a deployment. On DXP
+nothing does — the container is replaced on release — so there is no previous manifest to diff
+against and `Transition` is always `Baseline`. The comparison is done in the query instead; see
+[What is deployed, and when it changed](#what-is-deployed-and-when-it-changed). Setting `StatePath`
+to a mounted share is the only way to get the in-process diff back, and it buys convenience rather
+than information.
+
+`FleetDivergence` has the same dependency and one more: the state directory has to be *shared*
+between instances for one to see another. Where it is not, the divergence query above answers the
+same question from the manifest events.
+
+### Requests have no `DeploymentFingerprint` dimension
+
+- **`Optimizely:Instrumentation:Deployment:StampTelemetry` is false**, or `Deployment:Enabled` is,
+  or the master switch is.
+- **The site has no Application Insights.** The events still go to the log; there is nothing to
+  stamp.
+- **The rows predate the first scan.** The dimension is attached at startup and filled in when the
+  first scan completes a moment later, so the earliest requests of a process have no value. They are
+  a handful of rows, and dropping them with `isnotempty(build)` is more honest than treating them as
+  a build.
+- **The site is on Application Insights SDK 3.x.** The initializer is attached by reflection to
+  `TelemetryConfiguration.TelemetryInitializers`, which 3.x does not have — the same 3.x gap that
+  affects counter collection. See
+  [OpenTelemetry, Azure Monitor and Application Insights 3.x](#opentelemetry-azure-monitor-and-application-insights-3x).
+
 ---
 
 ## Current gaps
@@ -1036,6 +1379,13 @@ does not exist:
 
 - **Application Insights auto-registration on V11**, for this package's own counters. Described
   above. The SQL connection pool counters do register there.
+- **The meter is V12 and V13 only, and is not auto-subscribed.** .NET Framework has no
+  `System.Diagnostics.Metrics`, so V11 has the EventSource and nothing else. On V12 and V13 the
+  meter is published but a collector still has to name it; there is no equivalent of the automatic
+  Application Insights wiring, because adding metrics to somebody else's exporter without being
+  asked is not this package's call.
+- **The meter carries no tags and no units.** Deliberate, and explained above: name parity with the
+  EventSource is worth more than either while both paths are live.
 - **Counters cannot be disabled one at a time.** The settings described above switch features —
   a probe, the cascade instrumentation, the log write rate, or the whole package — rather than
   individual counters.

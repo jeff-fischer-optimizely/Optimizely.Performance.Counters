@@ -141,4 +141,21 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <!--
+    For PortableExecutableReader, which parses the PE and CLI metadata headers by hand to read a
+    module's MVID. It is internal on purpose: byte offsets into ECMA-335 are not API surface this
+    package wants to support, and the one caller is the inventory scanner.
+
+    It is also the highest-risk code in the package - a misread offset produces a plausible GUID
+    rather than an error, and the deployment fingerprint built on it would look stable while meaning
+    nothing - so it is the code that most needs testing directly against a real assembly, rather
+    than through a scanner that would hide the difference. Unambiguous here in a way it would not be
+    for the linked shared source; see the note in the test project.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Optimizely.Performance.Counters.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

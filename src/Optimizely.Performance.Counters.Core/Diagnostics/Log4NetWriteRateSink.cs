@@ -240,11 +240,8 @@ namespace Optimizely.Performance.Counters.Core.Diagnostics
         private static object CreateAppender(
             Type appenderType, LogWriteRateRecorder recorder, Func<object, int> levelValue)
         {
-            var create = typeof(DispatchProxy)
-                .GetMethod(nameof(DispatchProxy.Create), BindingFlags.Public | BindingFlags.Static)!
-                .MakeGenericMethod(appenderType, typeof(Log4NetWriteRateAppenderProxy));
-
-            var appender = create.Invoke(null, null)!;
+            var appender = DispatchProxyFactory
+                .Create(appenderType, typeof(Log4NetWriteRateAppenderProxy));
 
             ((Log4NetWriteRateAppenderProxy)appender).OnAppend = loggingEvent =>
             {

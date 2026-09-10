@@ -37,12 +37,31 @@ namespace Optimizely.Performance.Counters.Tests.Initialization
             return harness;
         }
 
+        /// <summary>
+        /// Asserts that what the container hands out is the tracker this major is meant to get.
+        /// </summary>
+        /// <remarks>
+        /// Two answers rather than one. V12 and V13 publish to the EventSource and to a
+        /// <c>Meter</c> at once, because neither path reaches every host - Application Insights
+        /// SDK 3.x and <c>UseAzureMonitor()</c> collect no EventCounters, and <c>dotnet-counters</c>
+        /// and the DataDog tracer find the EventSource without being told. V11 gets the EventSource
+        /// alone: .NET Framework has no <c>System.Diagnostics.Metrics</c> to publish to.
+        /// </remarks>
+        private static void AssertRegisteredTracker(IMetricTracker tracker)
+        {
+#if CMS11
+            Assert.IsType<EventCounterMetricTracker>(tracker);
+#else
+            Assert.IsType<CompositeMetricTracker>(tracker);
+#endif
+        }
+
         [Fact]
         public void The_CMS_module_registers_a_metric_tracker()
         {
             // Without this the decorators cannot be constructed at all, so every resolution below
             // would fail for a reason that has nothing to do with interception.
-            Assert.IsType<EventCounterMetricTracker>(ConfiguredForCms().Resolve<IMetricTracker>());
+            AssertRegisteredTracker(ConfiguredForCms().Resolve<IMetricTracker>());
         }
 
         [Fact]
@@ -78,7 +97,7 @@ namespace Optimizely.Performance.Counters.Tests.Initialization
         public void The_Commerce_module_registers_a_metric_tracker()
         {
             // The Commerce package ships on its own, so it cannot lean on the CMS module having run.
-            Assert.IsType<EventCounterMetricTracker>(ConfiguredForCommerce().Resolve<IMetricTracker>());
+            AssertRegisteredTracker(ConfiguredForCommerce().Resolve<IMetricTracker>());
         }
 
         [Fact]
@@ -108,7 +127,7 @@ namespace Optimizely.Performance.Counters.Tests.Initialization
 
             Assert.IsType<InstrumentedContentLoader>(harness.Resolve<IContentLoader>());
             Assert.IsType<InstrumentedOrderRepository>(harness.Resolve<IOrderRepository>());
-            Assert.IsType<EventCounterMetricTracker>(harness.Resolve<IMetricTracker>());
+            AssertRegisteredTracker(harness.Resolve<IMetricTracker>());
         }
     }
 }

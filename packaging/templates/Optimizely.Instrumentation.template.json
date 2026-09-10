@@ -161,6 +161,110 @@
         "SharedCacheConflictLogsPerMinute": 5,
         "_comment_FailureThreshold": "Consecutive failures after which the recorder switches itself off for the process.",
         "FailureThreshold": 20
+      },
+
+      "Meter": {
+        "_comment": [
+          "The only switch in this file that is not about a measurement. Everything else decides",
+          "whether a counter is produced; this decides how the counters that are produced leave",
+          "the process.",
+          "",
+          "Every counter is published twice: to the Optimizely-Performance EventSource, and to a",
+          "System.Diagnostics.Metrics meter of the same name carrying the same counter names. The",
+          "meter is the only path that reaches OpenTelemetry, UseAzureMonitor() or Application",
+          "Insights SDK 3.x - none of which collect EventCounters at all, because the",
+          "EventCounterCollector package stopped at 2.23.0 and has no 3.x. Subscribe with one line:",
+          "  .WithMetrics(m => m.AddMeter(\"Optimizely-Performance\"))",
+          "",
+          "Defaults to true because the failure it prevents is silent: with the meter off, a site",
+          "on any of those hosts publishes every counter to nobody and nothing says so. Leaving it",
+          "on where nothing collects meters costs a call that returns on a disabled instrument.",
+          "",
+          "Ignored on CMS 11, which has no System.Diagnostics.Metrics. The setting is left here so",
+          "one settings file serves all three majors."
+        ],
+        "Enabled": true
+      },
+
+      "Deployment": {
+        "_comment": [
+          "The only node in this file that is not about a counter. Everything else measures the",
+          "running site; this records what was deployed, so a change in one can be attributed to",
+          "a change in the other.",
+          "",
+          "At startup and on a heartbeat the bin folder is scanned and reduced to a 16-character",
+          "fingerprint over every assembly's identity - its MVID, the compiler's own id for the",
+          "exact bits, so a rebuild of the same version reads as a change and a version bump",
+          "without a rebuild does not. Four events go to Application Insights under names starting",
+          "OptiCounters., and the fingerprint is also stamped onto every request, dependency and",
+          "exception the site sends as a DeploymentFingerprint custom dimension. Grouping any chart",
+          "by that dimension is what makes 'did the release cause this' a query rather than an",
+          "argument about timestamps.",
+          "",
+          "False emits nothing, stamps nothing and does not scan."
+        ],
+        "Enabled": true,
+
+        "_comment_StatePath": [
+          "Where the last manifest is kept, so the next start can diff against it. Empty means",
+          "probe for somewhere writable in order - App Service's /home/data, then ProgramData,",
+          "then the temporary directory - and report on every event which one won and whether it",
+          "survives a deployment.",
+          "",
+          "Worth setting only if you have somewhere that genuinely outlives a deployment, such as",
+          "a mounted share. On DXP the container is replaced wholesale on every release, so no",
+          "path inside it is durable and every start reports as a baseline rather than a diff -",
+          "which is why the manifest event carries the fingerprint on every row. The comparison",
+          "happens in the query instead, and needs no state at all."
+        ],
+        "StatePath": "",
+
+        "_comment_InventoryMode": [
+          "When the one-row-per-assembly listing is emitted. OnChange sends it once per process",
+          "start, again whenever the fingerprint changes, and again every InventoryReemitHours so",
+          "the answer never ages out of retention. Always adds every heartbeat, which is the same",
+          "few hundred rows over and over - useful while proving the feature out, expensive as a",
+          "standing setting. Never keeps the manifest and the change events and drops the listing,",
+          "which loses the ability to answer what a given fingerprint actually contained."
+        ],
+        "InventoryMode": "OnChange",
+
+        "_comment_HeartbeatMinutes": [
+          "How often the bin folder is rescanned. This is also how quickly an out-of-band change -",
+          "a hotfixed DLL copied onto one instance - is noticed, and how long after a rolling",
+          "deployment the fleet is confirmed to have converged."
+        ],
+        "HeartbeatMinutes": 15,
+        "InventoryReemitHours": 168,
+
+        "_comment_IncludeSystemAssemblies": [
+          "False drops System.* and Microsoft.* from the scan, which makes the inventory shorter",
+          "and the fingerprint blind to a runtime patch. Whatever this is set to, set it the same",
+          "on every instance: two instances scanning to different rules report as diverged."
+        ],
+        "IncludeSystemAssemblies": true,
+
+        "_comment_IncludeFilePaths": [
+          "False by default. The file name and version identify an assembly; the full path adds",
+          "the host's directory layout to telemetry that is otherwise about the deployment."
+        ],
+        "IncludeFilePaths": false,
+
+        "_comment_StampTelemetry": [
+          "The DeploymentFingerprint dimension on every telemetry item. False keeps the events and",
+          "loses the join - the events would then say what changed and when, and nothing would",
+          "connect that to a request. application_Version is left to the host either way."
+        ],
+        "StampTelemetry": true,
+
+        "_comment_MaxChangeEvents": [
+          "A cap on the per-assembly change rows one transition can emit. A first start on a host",
+          "with no durable state is a baseline and emits none; a genuine framework upgrade can",
+          "change hundreds. Hitting the cap is written to the log."
+        ],
+        "MaxChangeEvents": 200,
+        "_comment_MaxAssemblies": "A cap on the scan itself. A truncated scan says so on the manifest event.",
+        "MaxAssemblies": 2000
       }
     }
   }
